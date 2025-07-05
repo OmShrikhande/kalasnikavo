@@ -1,0 +1,3 @@
+Best Match: Akshay Kumar_35.jpg
+Confidence: 15.52%
+Time Taken: 103.11 seconds
