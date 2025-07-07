@@ -54,78 +54,100 @@ The **Dual Biometric Recognition System** is a cutting-edge security solution th
 
 ---
 
-## 🚀 Quick Start
 
-### 📋 Prerequisites
+## 🚀 Quick Start: Web Application
 
-Before you begin, ensure you have the following installed:
+### 1. Backend (Flask)
 
-```bash
-# Python 3.8 or higher
-python --version
-
-# Git (for cloning)
-git --version
+#### Install Python dependencies
+```sh
+pip install flask werkzeug numpy opencv-python scikit-learn deepface scikit-image pandas matplotlib
 ```
 
-### 🔧 Installation
+#### Run the backend
+```sh
+python webapp/app.py
+```
+- The backend will start on http://localhost:5000
 
-1. **Clone the Repository**
-   ```bash
-   git clone https://github.com/your-username/dual-biometric-recognition.git
-   cd dual-biometric-recognition
-   ```
+### 2. Frontend (React + Vite)
 
-2. **Create Virtual Environment**
-   ```bash
-   python -m venv .venv
-   
-   # Windows
-   .venv\Scripts\activate
-   
-   # macOS/Linux
-   source .venv/bin/activate
-   ```
-
-3. **Install Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Download Pre-trained Models**
-   ```bash
-   # The system will automatically download required models on first run
-   python setup_models.py
-   ```
-
-5. **Setup Dataset Structure**
-   ```bash
-   mkdir -p facialDataset/Faces/Faces
-   mkdir -p fingerprintDataset/real
-   mkdir -p fingerprintDataset/altered
-   ```
-
-### 🎮 Running the Application
-
-#### 🖥️ **Full System (Recommended)**
-```bash
-python fingerprint_gui.py
+#### Install Node.js dependencies
+```sh
+cd webapp
+npm install
 ```
 
-#### 👤 **Facial Recognition Only**
-```bash
-python facial_recognition_gui.py
+#### Run the frontend
+```sh
+npm run dev
+```
+- The frontend will start on http://localhost:3000
+- The frontend proxies API requests to the Flask backend.
+
+---
+
+## Usage
+
+### Registration
+1. Click "Register New User".
+2. Enter a username, upload a face image and a fingerprint (bmp).
+3. Submit to register. User is stored in the database.
+
+### Authentication
+1. Enter your username.
+2. Upload your face image and authenticate.
+3. If face matches, upload your fingerprint and authenticate.
+4. If both match, access is granted.
+
+---
+
+## API Endpoints
+- `POST /api/register` — Register a new user (fields: username, face, fingerprint)
+- `POST /api/auth/face` — Authenticate face (fields: username, face)
+- `POST /api/auth/fingerprint` — Authenticate fingerprint (fields: username, fingerprint)
+
+---
+
+## Project Structure
+```
+webapp/
+  app.py           # Flask backend
+  users.db         # SQLite database (auto-created)
+  uploads/         # Uploaded biometric files
+  src/             # React frontend source
+    App.jsx        # Main React app
+    main.jsx       # Entry point
+    index.html     # HTML template
+  package.json     # Frontend dependencies
+  vite.config.js   # Vite config (API proxy)
 ```
 
-#### 👆 **Fingerprint Recognition Only**
-```bash
-python oldfingerprintom.py
-```
+---
 
-#### 🔬 **Model Training & Evaluation**
-```bash
-python facefingerdev.py
-```
+## Security & Best Practices
+- All file uploads are validated and stored securely.
+- Passwords are not used; authentication is biometric only.
+- Logging and error handling are implemented throughout.
+- For production, use HTTPS and secure deployment practices.
+
+---
+
+## Extending Functionality
+- Add password or OTP as a third factor for even higher security.
+- Integrate with cloud storage or a more robust database.
+- Add user management/admin dashboard.
+- Deploy with Docker for easy production use.
+
+---
+
+## License
+MIT License
+
+---
+
+## Support
+For issues or feature requests, open an issue on the project repository.
 
 ---
 
@@ -412,32 +434,41 @@ UI_CONFIG = {
 
 ---
 
-## 🧪 Testing & Validation
+### 🧪 Testing & Validation
 
-### 🔬 **Testing Framework**
+#### 🔬 **Testing Framework**
 ```bash
-# Run all tests
+# Run all tests (unit tests for biometrics modules)
 python -m pytest tests/
 
 # Run specific test categories
-python -m pytest tests/test_facial_recognition.py
-python -m pytest tests/test_fingerprint_analysis.py
-python -m pytest tests/test_fusion_system.py
+python -m pytest tests/test_face.py
+python -m pytest tests/test_fingerprint.py
+python -m pytest tests/test_utils.py
 
 # Generate coverage report
-python -m pytest --cov=src tests/
+python -m pytest --cov=biometrics tests/
 ```
 
-### 📊 **Performance Benchmarks**
-```bash
-# Benchmark facial recognition
-python benchmarks/face_benchmark.py
+#### ⚡ **Parallelization**
+- Feature extraction and comparison logic is designed for future parallel execution using Python's `concurrent.futures`.
+- For large datasets, you can enable parallel processing in the biometrics modules (see code comments for guidance).
 
-# Benchmark fingerprint recognition
-python benchmarks/fingerprint_benchmark.py
+#### 📚 **API Documentation**
+- Full API documentation for the biometrics package is available in `biometrics/README_API.md`.
+- All public functions are documented with type hints and docstrings.
 
-# Generate comparison reports
-python benchmarks/generate_report.py
+---
+
+## 🧩 Modular Biometrics Package
+
+- All face and fingerprint logic is now in the `biometrics/` package for maintainability and reusability.
+- Centralized configuration in `biometrics/config.py`.
+- Utilities and logging in `biometrics/utils.py`.
+- Unit tests in `tests/`.
+- API documentation in `biometrics/README_API.md`.
+
+---
 ```
 
 ---

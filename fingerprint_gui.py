@@ -2,8 +2,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 import threading
 import time
-from faceOM import find_most_similar  # Import the function from faceOM.py
-from oldfingerprintom import compare_fingerprints  # Import the function from oldfingerprintom.py
+from biometrics.face import find_most_similar
+from biometrics.fingerprint import compare_fingerprints
 import os
 import subprocess
 
@@ -225,7 +225,7 @@ class CombinedGUI:
 
         try:
             # Pass the progress bar to the compare_fingerprints function
-            compare_fingerprints(self.selected_fingerprint_file, None, self.fingerprint_logs_text, progress_bar)
+            compare_fingerprints(self.selected_fingerprint_file, None, self.log_fingerprint, progress_bar)
         except Exception as e:
             self.log_fingerprint(f"Error during fingerprint recognition: {e}")
         finally:
