@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from typing import Optional, Callable
 from .config import FINGERPRINT_DATASET_PATH, FINGERPRINT_RESULTS_FILE, RESULTS_DIR, MIN_CLASS_SAMPLES
 from .utils import setup_logging
+from .parallel import parallel_map
 
 setup_logging()
 
@@ -30,7 +31,16 @@ def extract_features(image_path: str) -> np.ndarray:
     return features
 
 
-def compare_fingerprints(fingerprint_path: str, dataset_path: Optional[str], log_callback: Optional[Callable[[str], None]], progress_bar=None):
+def _compare_single(args):
+    input_features, db_path = args
+    try:
+        db_features = extract_features(db_path)
+        score = cosine_similarity([input_features], [db_features])[0][0]
+        return db_path, score, None
+    except Exception as e:
+        return db_path, None, str(e)
+
+def compare_fingerprints(fingerprint_path: str, dataset_path: Optional[str], log_callback: Optional[Callable[[str], None]], progress_bar=None, parallel: bool = True, max_workers: int = 4):
     if dataset_path is None:
         dataset_path = FINGERPRINT_DATASET_PATH
     start_time = time.time()
@@ -50,40 +60,41 @@ def compare_fingerprints(fingerprint_path: str, dataset_path: Optional[str], log
     total = len(files)
     if log_callback:
         log_callback(f"Comparing against {total} fingerprints...")
+    tasks = [(input_features, os.path.join(dataset_path, file)) for file in files]
+    if parallel:
+        results_raw = parallel_map(_compare_single, tasks, max_workers=max_workers)
+    else:
+        results_raw = [_compare_single(t) for t in tasks]
     epoch = 0
-    for idx, file in enumerate(files):
+    for file, score, error in [ (os.path.basename(t[1]), s, err) for t, (p, s, err) in zip(tasks, results_raw) ]:
         if progress_bar:
-            progress = int((idx + 1) / total * 100)
+            progress = int((epoch + 1) / total * 100)
             progress_bar["value"] = progress
             progress_bar.update_idletasks()
-        try:
-            db_path = os.path.join(dataset_path, file)
-            db_features = extract_features(db_path)
-            score = cosine_similarity([input_features], [db_features])[0][0]
-            accuracy = score * 100
-            precision = accuracy / 100
-            recall = 1
-            f1_score = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-            metrics_per_epoch.append({
-                "epoch": epoch,
-                "accuracy": accuracy,
-                "precision": precision,
-                "recall": recall,
-                "f1_score": f1_score
-            })
-            epoch += 1
-            scores.append((file, score))
-            if log_callback:
-                log_callback(f"{file}: Score = {score:.4f}")
-            if score > best_score:
-                best_score = score
-                best_match_file = file
-        except Exception as e:
-            msg = f"[ERROR] Skipping {file}: {e}"
+        if error:
+            msg = f"[ERROR] Skipping {file}: {error}"
             logging.error(msg)
             if log_callback:
                 log_callback(msg)
             continue
+        accuracy = score * 100
+        precision = accuracy / 100
+        recall = 1
+        f1_score = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        metrics_per_epoch.append({
+            "epoch": epoch,
+            "accuracy": accuracy,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1_score
+        })
+        epoch += 1
+        scores.append((file, score))
+        if log_callback:
+            log_callback(f"{file}: Score = {score:.4f}")
+        if score > best_score:
+            best_score = score
+            best_match_file = file
     metrics_csv = os.path.join(RESULTS_DIR, "fingerprint_metrics_per_epoch.csv")
     with open(metrics_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["epoch", "accuracy", "precision", "recall", "f1_score"])

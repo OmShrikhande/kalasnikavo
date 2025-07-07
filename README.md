@@ -412,32 +412,41 @@ UI_CONFIG = {
 
 ---
 
-## 🧪 Testing & Validation
+### 🧪 Testing & Validation
 
-### 🔬 **Testing Framework**
+#### 🔬 **Testing Framework**
 ```bash
-# Run all tests
+# Run all tests (unit tests for biometrics modules)
 python -m pytest tests/
 
 # Run specific test categories
-python -m pytest tests/test_facial_recognition.py
-python -m pytest tests/test_fingerprint_analysis.py
-python -m pytest tests/test_fusion_system.py
+python -m pytest tests/test_face.py
+python -m pytest tests/test_fingerprint.py
+python -m pytest tests/test_utils.py
 
 # Generate coverage report
-python -m pytest --cov=src tests/
+python -m pytest --cov=biometrics tests/
 ```
 
-### 📊 **Performance Benchmarks**
-```bash
-# Benchmark facial recognition
-python benchmarks/face_benchmark.py
+#### ⚡ **Parallelization**
+- Feature extraction and comparison logic is designed for future parallel execution using Python's `concurrent.futures`.
+- For large datasets, you can enable parallel processing in the biometrics modules (see code comments for guidance).
 
-# Benchmark fingerprint recognition
-python benchmarks/fingerprint_benchmark.py
+#### 📚 **API Documentation**
+- Full API documentation for the biometrics package is available in `biometrics/README_API.md`.
+- All public functions are documented with type hints and docstrings.
 
-# Generate comparison reports
-python benchmarks/generate_report.py
+---
+
+## 🧩 Modular Biometrics Package
+
+- All face and fingerprint logic is now in the `biometrics/` package for maintainability and reusability.
+- Centralized configuration in `biometrics/config.py`.
+- Utilities and logging in `biometrics/utils.py`.
+- Unit tests in `tests/`.
+- API documentation in `biometrics/README_API.md`.
+
+---
 ```
 
 ---
