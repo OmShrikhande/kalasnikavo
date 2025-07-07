@@ -1,5 +1,5 @@
 from tkinter import Tk, Label, Button, filedialog, Text, Scrollbar, END, Frame
-from faceOM import find_most_similar  # Import the function from faceOM.py
+from biometrics.face import find_most_similar
 import os
 import threading  # Import threading for background processing
 

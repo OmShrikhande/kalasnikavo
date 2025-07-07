@@ -19,19 +19,25 @@ import sys
 import threading
 import subprocess
 import tkinter as tk
+from biometrics.config import KNN_MODEL_PATH, SVM_MODEL_PATH, MIN_CLASS_SAMPLES
+from biometrics.utils import setup_logging
+import logging
+
+setup_logging()
 
 
 class FaceProcessor:
-    def __init__(self, dataset_path):
+    def __init__(self, dataset_path: str):
         self.dataset_path = dataset_path
         self.resnet = ResNet50(weights="imagenet", include_top=False, pooling='avg')
         self.face_model = Model(inputs=self.resnet.input, outputs=self.resnet.output)
-        self.X = []
-        self.y = []
+        self.X: list = []
+        self.y: list = []
 
-    def extract_features(self, img_path):
+    def extract_features(self, img_path: str) -> np.ndarray:
         img = cv2.imread(img_path)
         if img is None:
+            logging.warning(f"Could not read image: {img_path}")
             return None
         img = cv2.resize(img, (224, 224))
         img = image.img_to_array(img)
@@ -40,22 +46,22 @@ class FaceProcessor:
         return features.flatten()
 
     def load_data(self):
-        print("Extracting face features...")
+        logging.info("Extracting face features...")
         for class_name in os.listdir(self.dataset_path):
             class_dir = os.path.join(self.dataset_path, class_name)
             if not os.path.isdir(class_dir):
                 continue
             for img_file in os.listdir(class_dir):
-                if not img_file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+                if not img_file.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                     continue
                 img_path = os.path.join(class_dir, img_file)
                 features = self.extract_features(img_path)
                 if features is not None:
                     self.X.append(features)
                     self.y.append(class_name)
-        print(f"[OK] {len(self.X)} face samples collected.")
+        logging.info(f"[OK] {len(self.X)} face samples collected.")
 
-    def filter_classes(self, min_samples=2):
+    def filter_classes(self, min_samples: int = MIN_CLASS_SAMPLES):
         counts = Counter(self.y)
         valid_labels = {label for label, count in counts.items() if count >= min_samples}
         self.X = [x for x, y in zip(self.X, self.y) if y in valid_labels]
@@ -65,31 +71,32 @@ class FaceProcessor:
 
 
 class FingerprintProcessor:
-    def __init__(self, dataset_path):
+    def __init__(self, dataset_path: str):
         self.dataset_path = dataset_path
-        self.X = []
-        self.y = []
+        self.X: list = []
+        self.y: list = []
 
-    def gabor_enhance(self, img):
+    def gabor_enhance(self, img: np.ndarray) -> np.ndarray:
         img = img / 255.0
         real, _ = gabor(img, frequency=0.6)
         return (real * 255).astype(np.uint8)
 
-    def extract_lbp(self, img):
+    def extract_lbp(self, img: np.ndarray) -> np.ndarray:
         lbp = local_binary_pattern(img, P=8, R=1, method='uniform')
         hist, _ = np.histogram(lbp.ravel(), bins=np.arange(0, 10), range=(0, 9))
         hist = hist.astype("float")
         hist /= (hist.sum() + 1e-6)
         return hist
 
-    def fake_minutiae_features(self, img):
+    def fake_minutiae_features(self, img: np.ndarray) -> int:
         blurred = gaussian_filter(img, sigma=1)
         corners = cv2.goodFeaturesToTrack(blurred, maxCorners=10, qualityLevel=0.01, minDistance=5)
         return corners.shape[0] if corners is not None else 0
 
-    def extract_features(self, img_path):
+    def extract_features(self, img_path: str) -> np.ndarray:
         img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         if img is None:
+            logging.warning(f"Could not read image: {img_path}")
             return None
         img = cv2.resize(img, (100, 100))
         img = cv2.equalizeHist(img)
@@ -99,20 +106,17 @@ class FingerprintProcessor:
         return np.append(lbp, minutiae)
 
     def load_data(self):
-        print("Extracting fingerprint features...")
-
+        logging.info("Extracting fingerprint features...")
         if not os.path.exists(self.dataset_path):
             raise FileNotFoundError(f"Dataset path '{self.dataset_path}' does not exist.")
-
         has_subdirs = any(os.path.isdir(os.path.join(self.dataset_path, item)) for item in os.listdir(self.dataset_path))
-
         if has_subdirs:
             for class_name in os.listdir(self.dataset_path):
                 class_dir = os.path.join(self.dataset_path, class_name)
                 if not os.path.isdir(class_dir):
                     continue
                 for img_file in os.listdir(class_dir):
-                    if not img_file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+                    if not img_file.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                         continue
                     img_path = os.path.join(class_dir, img_file)
                     features = self.extract_features(img_path)
@@ -121,7 +125,7 @@ class FingerprintProcessor:
                         self.y.append(class_name)
         else:
             for img_file in os.listdir(self.dataset_path):
-                if not img_file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+                if not img_file.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                     continue
                 label = os.path.splitext(img_file)[0].split('_')[0]
                 img_path = os.path.join(self.dataset_path, img_file)
@@ -129,10 +133,9 @@ class FingerprintProcessor:
                 if features is not None:
                     self.X.append(features)
                     self.y.append(label)
+        logging.info(f"[OK] {len(self.X)} fingerprint samples collected from {self.dataset_path}.")
 
-        print(f"[OK] {len(self.X)} fingerprint samples collected from {self.dataset_path}.")
-
-    def filter_classes(self, min_samples=2):
+    def filter_classes(self, min_samples: int = MIN_CLASS_SAMPLES):
         counts = Counter(self.y)
         valid_labels = {label for label, count in counts.items() if count >= min_samples}
         self.X = [x for x, y in zip(self.X, self.y) if y in valid_labels]
@@ -156,7 +159,7 @@ class ModelEvaluator:
         n_splits = max(min(min_class_samples, 3), 2)
         skf = StratifiedKFold(n_splits=n_splits)
         scores = cross_val_score(self.model, self.X, self.y, cv=skf)
-        print(f"{self.name} CV Scores: {scores}")
+        logging.info(f"{self.name} CV Scores: {scores}")
         return scores
 
     def save_model(self, filename):
@@ -177,8 +180,8 @@ class ModelEvaluator:
         plt.title("Model Accuracy")
         plt.ylim(0, 1)
         plt.savefig(os.path.join(results_dir, "model_accuracy_graph.png"))
-        plt.show()
-        print(f"[OK] Results and graphs saved to {results_dir}")
+        plt.close()
+        logging.info(f"[OK] Results and graphs saved to {results_dir}")
 
 
 def compare_single_image_with_faces(input_image_path, faces_folder, face_model):
@@ -279,8 +282,8 @@ if __name__ == "__main__":
     face_scores = face_eval.evaluate()
     fp_scores = fp_eval.evaluate()
 
-    face_eval.save_model("knn_model.pkl")
-    fp_eval.save_model("svm_fingerprint_model.pkl")
+    face_eval.save_model(KNN_MODEL_PATH)
+    fp_eval.save_model(SVM_MODEL_PATH)
 
     results_dir = os.path.join(os.getcwd(), "results", "devop")
     ModelEvaluator.plot_results(face_scores, fp_scores, results_dir)
