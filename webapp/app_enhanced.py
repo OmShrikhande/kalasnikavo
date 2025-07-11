@@ -73,7 +73,7 @@ app.config['SECRET_KEY'] = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 
 # Enable CORS
-CORS(app, origins=["http://localhost:3000", "http://localhost:5173"])
+CORS(app, origins=["http://localhost:3000", "http://localhost:5173"], supports_credentials=True)
 
 # Initialize rate limiter
 limiter = Limiter(

@@ -191,7 +191,8 @@ export default function App() {
     setLoading(true);
     const form = new FormData();
     form.append("username", username);
-    faceImages.forEach((img, idx) => form.append(`face_${idx}`, img));
+    // Only send the first face image as 'face' for simple backend
+    form.append("face", faceImages[0]);
     form.append("fingerprint", fpFile);
     try {
       await axios.post("/api/register", form);
@@ -267,7 +268,8 @@ export default function App() {
       setFaceImages([]);
       setFpFile(null);
       setDashboard(true);
-      fetchDocuments();
+      // Remove or comment out the next line for simple backend:
+      // fetchDocuments();
     } catch (e) {
       setSnackbar({
         open: true,
@@ -609,4 +611,3 @@ export default function App() {
     </ThemeProvider>
   );
 }
-    
