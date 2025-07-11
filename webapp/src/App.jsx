@@ -37,7 +37,6 @@ import {
   ListItemText,
   Divider,
   ThemeProvider,
-  createTheme,
   CssBaseline,
   useMediaQuery,
   Fab,
@@ -50,7 +49,14 @@ import {
   Tabs,
   Accordion,
   AccordionSummary,
-  AccordionDetails
+  AccordionDetails,
+  styled,
+  alpha,
+  keyframes,
+  Fade,
+  Slide,
+  Grow,
+  Zoom
 } from "@mui/material";
 import {
   UploadFile as UploadFileIcon,
@@ -103,6 +109,7 @@ import {
 } from "@mui/icons-material";
 import axios from "axios";
 import Dashboard from "./Dashboard";
+import theme from "./theme";
 
 // Set axios base URL
 axios.defaults.baseURL = 'http://localhost:5000';
@@ -299,15 +306,22 @@ export default function App() {
   ];
 
   if (dashboard) {
-    return <Dashboard username={username} onLogout={handleLogout} />;
+    return (
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <Dashboard username={username} onLogout={handleLogout} />
+      </ThemeProvider>
+    );
   }
 
   return (
-    <Container maxWidth="sm" sx={{ mt: 8 }}>
-      <Paper elevation={3} sx={{ p: 4 }}>
-        <Typography variant="h4" align="center" gutterBottom>
-          Dual Biometric Authentication
-        </Typography>
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Container maxWidth="sm" sx={{ mt: 8 }}>
+        <Paper elevation={3} sx={{ p: 4 }}>
+          <Typography variant="h4" align="center" gutterBottom>
+            Dual Biometric Authentication
+          </Typography>
         <Stepper activeStep={activeStep} alternativeLabel sx={{ mb: 3 }}>
           {steps.map((label) => (
             <Step key={label}>
@@ -592,6 +606,7 @@ export default function App() {
         </Alert>
       </Snackbar>
     </Container>
+    </ThemeProvider>
   );
 }
     
