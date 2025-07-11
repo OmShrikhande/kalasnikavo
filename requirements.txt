@@ -18,7 +18,7 @@ Pillow>=8.3.0
 scipy>=1.7.0
 
 # GUI Framework
-tkinter>=8.6
+# tkinter>=8.6
 
 # Visualization
 matplotlib>=3.5.0
