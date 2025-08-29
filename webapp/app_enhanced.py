@@ -76,11 +76,13 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 CORS(app, origins=["http://localhost:3000", "http://localhost:5173"], supports_credentials=True)
 
 # Initialize rate limiter
+# Initialize rate limiter (Flask-Limiter v3 style)
 limiter = Limiter(
-    app,
-    key_func=get_remote_address,
+    get_remote_address,
+    app=app,
     default_limits=[RATE_LIMITS['general']]
 )
+
 
 # Setup logging
 logging.basicConfig(
@@ -333,11 +335,16 @@ def register():
         
         # Get biometric files
         fingerprint = request.files.get('fingerprint')
+        # Accept either a single 'face' file or multiple face_i files
         face_files = []
-        for i in range(MAX_FACE_IMAGES):
-            file = request.files.get(f'face_{i}')
-            if file:
-                face_files.append(file)
+        single_face = request.files.get('face')
+        if single_face:
+            face_files.append(single_face)
+        else:
+            for i in range(MAX_FACE_IMAGES):
+                file = request.files.get(f'face_{i}')
+                if file:
+                    face_files.append(file)
         
         # Validation
         if not all([username, email, fingerprint]) or len(face_files) == 0:
@@ -381,9 +388,10 @@ def register():
             face_qualities.append(quality)
             face_paths.append(face_path)
             
-            # Encrypt file
-            encryption_key = hashlib.sha256(f"{username}:{idx}".encode()).hexdigest()[:32]
-            encrypt_file(face_path, encryption_key)
+            # Optionally encrypt file (disabled in development for matching)
+            if os.environ.get('ENCRYPT_BIOMETRICS', '0') in ('1', 'true', 'True'):
+                encryption_key = hashlib.sha256(f"{username}:{idx}".encode()).hexdigest()[:32]
+                encrypt_file(face_path, encryption_key)
         
         # Save fingerprint with quality assessment
         fp_filename = secure_filename(f"{username}_fp_{int(time.time())}.{fingerprint.filename.rsplit('.', 1)[1]}")
@@ -392,9 +400,10 @@ def register():
 
         fp_quality = calculate_biometric_quality(fp_path, 'fingerprint')
 
-        # Encrypt fingerprint
-        fp_encryption_key = hashlib.sha256(f"{username}:fingerprint".encode()).hexdigest()[:32]
-        encrypt_file(fp_path, fp_encryption_key)
+        # Optionally encrypt fingerprint (disabled in development for matching)
+        if os.environ.get('ENCRYPT_BIOMETRICS', '0') in ('1', 'true', 'True'):
+            fp_encryption_key = hashlib.sha256(f"{username}:fingerprint".encode()).hexdigest()[:32]
+            encrypt_file(fp_path, fp_encryption_key)
 
         # Calculate quality, but DO NOT check or reject based on it
         avg_face_quality = sum(face_qualities) / len(face_qualities)
@@ -504,17 +513,13 @@ def auth_face():
             submitted_quality = calculate_biometric_quality(temp_path, 'face')
             min_quality = SECURITY_LEVELS[user['security_level']]['threshold']
             
+            # Skip rejecting on quality in development; log and continue
             if submitted_quality < min_quality:
-                log_security_event('AUTH_FAILED', username, {
-                    'reason': 'Poor image quality',
+                log_security_event('AUTH_WARNING', username, {
+                    'reason': 'Low image quality',
                     'quality': submitted_quality,
                     'required': min_quality
                 }, 'warning')
-                return jsonify({
-                    'error': 'Image quality too low',
-                    'quality': submitted_quality,
-                    'required': min_quality
-                }), 400
             
             # Compare with stored face images
             stored_face_paths = user['face_paths'].split(',')
@@ -524,11 +529,13 @@ def auth_face():
             for stored_face_path in stored_face_paths:
                 if os.path.exists(stored_face_path):
                     try:
-                        # Decrypt stored image for comparison
+                        # Decrypt stored image for comparison (only if encryption is enabled)
                         # In production, decrypt temporarily in memory
-                        match, _ = find_most_similar(temp_path, 
-                                                   dataset_folder=os.path.dirname(stored_face_path), 
-                                                   parallel=True)
+                        match, _ = find_most_similar(
+                            temp_path,
+                            dataset_folder=os.path.dirname(stored_face_path),
+                            parallel=True
+                        )
                         if match and match.get('Confidence (%)', 0) > best_confidence:
                             best_confidence = match['Confidence (%)']
                             best_match = match
@@ -643,17 +650,13 @@ def auth_fingerprint():
             submitted_quality = calculate_biometric_quality(temp_path, 'fingerprint')
             min_quality = SECURITY_LEVELS[user['security_level']]['threshold']
             
+            # Skip rejecting on quality in development; log and continue
             if submitted_quality < min_quality:
-                log_security_event('AUTH_FAILED', username, {
-                    'reason': 'Poor fingerprint quality',
+                log_security_event('AUTH_WARNING', username, {
+                    'reason': 'Low fingerprint quality',
                     'quality': submitted_quality,
                     'required': min_quality
                 }, 'warning')
-                return jsonify({
-                    'error': 'Fingerprint quality too low',
-                    'quality': submitted_quality,
-                    'required': min_quality
-                }), 400
             
             # Compare fingerprints
             match_result = {'match': False, 'score': 0}

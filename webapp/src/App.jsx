@@ -120,6 +120,7 @@ const MAX_FACE_IMAGES = 5;
 export default function App() {
   const [activeStep, setActiveStep] = useState(0);
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [faceImages, setFaceImages] = useState([]);
   const [fpFile, setFpFile] = useState(null);
   const [registerMode, setRegisterMode] = useState(false);
@@ -180,10 +181,10 @@ export default function App() {
   };
 
   const handleRegister = async () => {
-    if (!username || faceImages.length === 0 || !fpFile) {
+    if (!username || !email || faceImages.length === 0 || !fpFile) {
       setSnackbar({
         open: true,
-        message: "All fields required",
+        message: "Username, email, face and fingerprint are required",
         severity: "error",
       });
       return;
@@ -191,6 +192,7 @@ export default function App() {
     setLoading(true);
     const form = new FormData();
     form.append("username", username);
+    form.append("email", email);
     // Only send the first face image as 'face' for simple backend
     form.append("face", faceImages[0]);
     form.append("fingerprint", fpFile);
@@ -339,6 +341,16 @@ export default function App() {
             fullWidth
             sx={{ mb: 2 }}
           />
+          {registerMode && (
+            <TextField
+              label="Email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              fullWidth
+              sx={{ mb: 2 }}
+            />
+          )}
           <Button
             onClick={() => {
               setRegisterMode(!registerMode);

@@ -1,3 +1,3 @@
-Best Match: temp_demosh_face.jpg
-Confidence: 100.0%
-Time Taken: 6.22 seconds
+Best Match: temp_vaishnavi_face.jpg
+Confidence: 93.65%
+Time Taken: 8.47 seconds
