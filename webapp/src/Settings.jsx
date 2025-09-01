@@ -70,7 +70,9 @@ const THEMES = [
   { id: 'auto', name: 'Auto (System)' }
 ];
 
-export default function Settings({ open, onClose, settings, onSettingsChange }) {
+import axios from 'axios';
+
+export default function Settings({ open, onClose, settings, onSettingsChange, username }) {
   const [localSettings, setLocalSettings] = useState(settings);
   const [hasChanges, setHasChanges] = useState(false);
 
@@ -84,8 +86,16 @@ export default function Settings({ open, onClose, settings, onSettingsChange }) 
 
   const handleSave = () => {
     onSettingsChange(localSettings);
-    setHasChanges(false);
-    onClose();
+    // persist to backend
+    axios.put('/api/user/settings', { username, settings: localSettings })
+      .then(() => {
+        setHasChanges(false);
+        onClose();
+      })
+      .catch(() => {
+        setHasChanges(false);
+        onClose();
+      });
   };
 
   const handleReset = () => {

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Container,
   Paper,
@@ -132,6 +132,8 @@ import {
   ColorLens as ColorLensIcon
 } from '@mui/icons-material';
 import axios from 'axios';
+import UserProfile from './UserProfile';
+import Settings from './Settings';
 
 // Styled components with advanced animations and gradients
 const StyledDashboard = styled(Box)(({ theme }) => ({
@@ -359,6 +361,27 @@ export default function Dashboard({ username, onLogout }) {
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [documentDetailsOpen, setDocumentDetailsOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const fileInputRef = useRef(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsState, setSettingsState] = useState({
+    securityLevel: 'MEDIUM',
+    livenessDetection: true,
+    multiFactorEnabled: false,
+    sessionTimeout: 30,
+    voiceRecognition: false,
+    behaviorAnalysis: false,
+    darkMode: false,
+    language: 'en',
+    uiScale: 100,
+    securityAlerts: true,
+    loginNotifications: true,
+    systemUpdates: true,
+    soundNotifications: true,
+    debugMode: false,
+    offlineMode: false,
+    cacheSize: 100,
+  });
 
   const theme = useTheme();
 
@@ -376,6 +399,13 @@ export default function Dashboard({ username, onLogout }) {
 
   useEffect(() => {
     fetchDocuments();
+    // Load settings for this user
+    (async () => {
+      try {
+        const res = await axios.get(`/api/user/settings?username=${encodeURIComponent(username)}`);
+        setSettingsState(res.data || settingsState);
+      } catch {}
+    })();
   }, [fetchDocuments]);
 
   const getFileHash = async (file) => {
@@ -413,15 +443,17 @@ export default function Dashboard({ username, onLogout }) {
       });
     } finally {
       setDocUploadLoading(false);
+      // Allow selecting the same file again by clearing the value
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  const handleDocDelete = async (docName) => {
+  const handleDocDelete = async (docId, originalName) => {
     try {
-      await axios.delete(`/api/user/docs?username=${encodeURIComponent(username)}&doc=${encodeURIComponent(docName)}`);
+      await axios.delete(`/api/user/docs?username=${encodeURIComponent(username)}&doc=${encodeURIComponent(docId)}`);
       setSnackbar({ 
         open: true, 
-        message: `${docName} deleted successfully!`, 
+        message: `${originalName} securely deleted!`, 
         severity: 'success' 
       });
       await fetchDocuments();
@@ -429,6 +461,36 @@ export default function Dashboard({ username, onLogout }) {
       setSnackbar({ 
         open: true, 
         message: 'Delete failed. Please try again.', 
+        severity: 'error' 
+      });
+    }
+  };
+
+  const handleDocDownload = async (docId, originalName) => {
+    try {
+      const response = await axios.get(`/api/user/docs/download?username=${encodeURIComponent(username)}&doc=${encodeURIComponent(docId)}`, {
+        responseType: 'blob'
+      });
+      
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', originalName);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setSnackbar({ 
+        open: true, 
+        message: `${originalName} downloaded successfully!`, 
+        severity: 'success' 
+      });
+    } catch (error) {
+      setSnackbar({ 
+        open: true, 
+        message: 'Download failed. Please try again.', 
         severity: 'error' 
       });
     }
@@ -456,21 +518,21 @@ export default function Dashboard({ username, onLogout }) {
   };
 
   const filteredDocuments = documents.filter(doc =>
-    doc.filename?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    doc.original_name?.toLowerCase().includes(searchTerm.toLowerCase())
+    (doc.filename || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (doc.original_name || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const stats = {
     totalDocuments: documents.length,
-    totalSize: documents.reduce((sum, doc) => sum + (doc.file_size || 0), 0),
+    totalSize: documents.reduce((sum, doc) => sum + (doc.size || 0), 0),
     recentUploads: documents.filter(doc => {
-      const uploadDate = new Date(doc.created_at);
+      const uploadDate = new Date(doc.uploaded || doc.created_at);
       const weekAgo = new Date();
       weekAgo.setDate(weekAgo.getDate() - 7);
       return uploadDate > weekAgo;
     }).length,
     documentTypes: [...new Set(documents.map(doc => 
-      doc.original_name?.split('.').pop().toLowerCase()
+      (doc.original_name || '').split('.').pop()?.toLowerCase()
     ))].length
   };
 
@@ -541,11 +603,11 @@ export default function Dashboard({ username, onLogout }) {
           }
         }}
       >
-        <MenuItem onClick={() => setProfileMenuAnchor(null)}>
+        <MenuItem onClick={() => { setProfileMenuAnchor(null); setProfileOpen(true); }}>
           <ListItemIcon><AccountCircleIcon /></ListItemIcon>
           Profile
         </MenuItem>
-        <MenuItem onClick={() => setProfileMenuAnchor(null)}>
+        <MenuItem onClick={() => { setProfileMenuAnchor(null); setSettingsOpen(true); }}>
           <ListItemIcon><SettingsIcon /></ListItemIcon>
           Settings
         </MenuItem>
@@ -804,19 +866,13 @@ export default function Dashboard({ username, onLogout }) {
                     
                     <AnimatedButton
                       variant="contained"
-                      component="label"
                       startIcon={<UploadFileIcon />}
                       disabled={docUploadLoading}
                       size="large"
                       sx={{ borderRadius: 3, px: 4 }}
+                      onClick={() => fileInputRef.current && fileInputRef.current.click()}
                     >
-                      {docUploadLoading ? 'Uploading...' : 'Choose Files'}
-                      <input 
-                        type="file" 
-                        hidden 
-                        onChange={handleDocUpload}
-                        accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.gif,.mp4,.avi,.mov,.mp3,.wav,.zip,.rar"
-                      />
+                      {docUploadLoading ? 'Uploading...' : 'Choose File'}
                     </AnimatedButton>
                     
                     {docUploadLoading && (
@@ -892,17 +948,40 @@ export default function Dashboard({ username, onLogout }) {
                               
                               <Box sx={{ mb: 2 }}>
                                 <Typography variant="caption" color="text.secondary">
-                                  Uploaded: {new Date(doc.created_at).toLocaleDateString()}
+                                  Uploaded: {new Date(doc.uploaded || doc.created_at).toLocaleDateString()}
                                 </Typography>
+                                {doc.access_count > 0 && (
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                    Accessed: {doc.access_count} times
+                                  </Typography>
+                                )}
                               </Box>
                               
-                              <Box sx={{ mb: 2 }}>
+                              <Box sx={{ mb: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                                 <Chip 
-                                  label={doc.mime_type || 'Unknown type'}
+                                  label={doc.type || doc.mime_type || 'Unknown type'}
                                   size="small"
                                   color="primary"
                                   variant="outlined"
                                 />
+                                {doc.encrypted && (
+                                  <Chip 
+                                    label="Encrypted"
+                                    size="small"
+                                    color="success"
+                                    variant="outlined"
+                                    icon={<LockIcon />}
+                                  />
+                                )}
+                                {doc.secure && (
+                                  <Chip 
+                                    label="Secure"
+                                    size="small"
+                                    color="info"
+                                    variant="outlined"
+                                    icon={<SecurityIcon />}
+                                  />
+                                )}
                               </Box>
                             </CardContent>
                             
@@ -924,9 +1003,7 @@ export default function Dashboard({ username, onLogout }) {
                                 </Button>
                                 <Button
                                   startIcon={<DownloadIcon />}
-                                  href={`/uploads/${doc.filename}`}
-                                  target="_blank"
-                                  rel="noopener"
+                                  onClick={() => handleDocDownload(doc.id, doc.original_name)}
                                 >
                                   Download
                                 </Button>
@@ -934,8 +1011,9 @@ export default function Dashboard({ username, onLogout }) {
                               
                               <IconButton
                                 color="error"
-                                onClick={() => handleDocDelete(doc.filename)}
+                                onClick={() => handleDocDelete(doc.id, doc.original_name)}
                                 size="small"
+                                title="Securely delete document"
                               >
                                 <DeleteIcon />
                               </IconButton>
@@ -1008,9 +1086,7 @@ export default function Dashboard({ username, onLogout }) {
                   <Button
                     variant="contained"
                     startIcon={<DownloadIcon />}
-                    href={`/uploads/${selectedDocument.filename}`}
-                    target="_blank"
-                    rel="noopener"
+                    onClick={() => handleDocDownload(selectedDocument.id, selectedDocument.original_name)}
                   >
                     Download
                   </Button>
@@ -1022,8 +1098,17 @@ export default function Dashboard({ username, onLogout }) {
       </Modal>
 
       {/* Floating Action Button */}
+      {/* Centralized hidden file input used by both the button and FAB */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        hidden
+        onChange={handleDocUpload}
+        accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.gif,.mp4,.avi,.mov,.mp3,.wav,.zip,.rar"
+      />
+
       <FloatingActionButton
-        onClick={() => document.querySelector('input[type="file"]').click()}
+        onClick={() => fileInputRef.current && fileInputRef.current.click()}
         disabled={docUploadLoading}
       >
         <AddIcon />
@@ -1048,6 +1133,36 @@ export default function Dashboard({ username, onLogout }) {
           {snackbar.message}
         </Alert>
       </Snackbar>
+    {/* Profile Dialog */}
+    <Dialog
+      open={profileOpen}
+      onClose={() => setProfileOpen(false)}
+      fullWidth
+      maxWidth="md"
+    >
+      <DialogTitle>Profile</DialogTitle>
+      <DialogContent dividers>
+        <UserProfile 
+          username={username} 
+          email={''}
+          phoneNumber={''}
+          securityLevel={settingsState.securityLevel}
+          biometricQuality={{ face: 0.9, fingerprint: 0.92 }}
+        />
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => setProfileOpen(false)}>Close</Button>
+      </DialogActions>
+    </Dialog>
+
+    {/* Settings Dialog */}
+    <Settings 
+      open={settingsOpen}
+      onClose={() => setSettingsOpen(false)}
+      settings={settingsState}
+      onSettingsChange={setSettingsState}
+      username={username}
+    />
     </StyledDashboard>
   );
 }

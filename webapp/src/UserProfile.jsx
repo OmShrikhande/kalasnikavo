@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 import {
   Container,
   Paper,
@@ -66,6 +67,16 @@ export default function UserProfile({
     email: email || '',
     phoneNumber: phoneNumber || ''
   });
+  const [profile, setProfile] = useState({
+    username,
+    email: email || '',
+    phoneNumber: phoneNumber || '',
+    securityLevel: securityLevel || 'MEDIUM',
+    lastLogin: '',
+    loginCount: 0,
+    createdAt: '',
+    updatedAt: ''
+  });
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [biometricUpdateOpen, setBiometricUpdateOpen] = useState(false);
 
@@ -79,10 +90,29 @@ export default function UserProfile({
     registeredBiometrics: ['Face', 'Fingerprint']
   };
 
-  const handleSaveProfile = () => {
-    // Save profile changes
-    setEditMode(false);
-    // API call would go here
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await axios.get(`/api/user/profile?username=${encodeURIComponent(username)}`);
+        setProfile(res.data);
+        setEditData({ email: res.data.email || '', phoneNumber: res.data.phoneNumber || '' });
+      } catch {}
+    })();
+  }, [username]);
+
+  const handleSaveProfile = async () => {
+    try {
+      await axios.put('/api/user/profile', {
+        username,
+        email: editData.email,
+        phoneNumber: editData.phoneNumber,
+        securityLevel: profile.securityLevel
+      });
+      setProfile({ ...profile, email: editData.email, phoneNumber: editData.phoneNumber });
+      setEditMode(false);
+    } catch {
+      setEditMode(false);
+    }
   };
 
   const ProfileHeader = () => (
@@ -116,8 +146,8 @@ export default function UserProfile({
             </Typography>
             <Box display="flex" alignItems="center" gap={2} mb={1}>
               <Chip 
-                label={`Security: ${SECURITY_LEVELS[securityLevel]?.name}`}
-                color={SECURITY_LEVELS[securityLevel]?.color}
+                label={`Security: ${SECURITY_LEVELS[profile.securityLevel]?.name}`}
+                color={SECURITY_LEVELS[profile.securityLevel]?.color}
                 icon={<ShieldIcon />}
               />
               <Chip 
@@ -127,7 +157,7 @@ export default function UserProfile({
               />
             </Box>
             <Typography variant="body2" color="textSecondary">
-              Member since {new Date(userStats.joinDate).toLocaleDateString()}
+              Member since {profile.createdAt ? new Date(profile.createdAt).toLocaleDateString() : new Date(userStats.joinDate).toLocaleDateString()}
             </Typography>
           </Box>
 
@@ -176,7 +206,7 @@ export default function UserProfile({
                     sx={{ mt: 1 }}
                   />
                 ) : (
-                  email || 'Not provided'
+                  profile.email || 'Not provided'
                 )
               }
             />
@@ -198,7 +228,7 @@ export default function UserProfile({
                     sx={{ mt: 1 }}
                   />
                 ) : (
-                  phoneNumber || 'Not provided'
+                  profile.phoneNumber || 'Not provided'
                 )
               }
             />
