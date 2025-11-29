@@ -1,3 +1,3 @@
 Accuracy: 100.00%
-Recall Time: 2.87s
+Recall Time: 3.92s
 F1-Score: 1.00
