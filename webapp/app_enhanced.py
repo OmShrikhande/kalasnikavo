@@ -452,9 +452,12 @@ def register():
         
         # Check if user already exists
         conn = get_db()
-        existing_user = conn.execute('SELECT id FROM users WHERE username = ? OR email = ?', 
-                                   (username, email)).fetchone()
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM users WHERE username = %s OR email = %s', 
+                       (username, email))
+        existing_user = cursor.fetchone()
         if existing_user:
+            cursor.close()
             conn.close()
             log_security_event('REGISTRATION_FAILED', username, 
                              {'reason': 'User already exists'}, 'warning')
@@ -503,19 +506,19 @@ def register():
         }
         
         try:
-            cursor = conn.cursor()
             cursor.execute('''INSERT INTO users 
                            (username, email, phone_number, face_paths, fp_path, 
                             security_level, device_fingerprint, registration_location, 
                             biometric_quality, is_verified) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           RETURNING id''',
                         (username, email, phone_number, ','.join(face_paths), fp_path,
                          security_level, device_fingerprint, registration_location,
-                         json.dumps(biometric_quality), 1))
+                         json.dumps(biometric_quality), True))
             conn.commit()
             
             # Get the last inserted row ID
-            user_id = cursor.lastrowid
+            user_id = cursor.fetchone()[0]
             
             # Log successful registration
             log_security_event('USER_REGISTERED', username, {
@@ -535,7 +538,7 @@ def register():
                 'security_level': security_level
             })
             
-        except sqlite3.IntegrityError as e:
+        except psycopg2.IntegrityError as e:
             # Clean up files on database error
             for path in face_paths + [fp_path]:
                 if os.path.exists(path):
@@ -545,6 +548,7 @@ def register():
             return jsonify({'error': 'Registration failed - database error'}), 500
         
         finally:
+            cursor.close()
             conn.close()
             
     except Exception as e:
@@ -607,12 +611,16 @@ def auth_face():
         try:
             # Get user data
             conn = get_db()
-            user = conn.execute('''SELECT face_paths, security_level, biometric_quality 
-                                  FROM users WHERE username = ? AND is_active = 1''', 
-                               (username,)).fetchone()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute('''SELECT face_paths, security_level, biometric_quality 
+                              FROM users WHERE username = %s AND is_active = true''', 
+                           (username,))
+            user = cursor.fetchone()
             
             if not user:
                 logger.warning(f"401 Debug: User not found for username={username}")
+                cursor.close()
+                conn.close()
                 log_security_event('AUTH_FAILED', username, 
                                  {'reason': 'User not found', 'attempt_type': 'face'}, 'warning')
                 return jsonify({'error': 'Authentication failed'}), 401
@@ -654,14 +662,15 @@ def auth_face():
             response_time = time.time() - start_time
             
             # Log authentication attempt
-            conn.execute('''INSERT INTO auth_attempts 
+            cursor.execute('''INSERT INTO auth_attempts 
                            (username, ip_address, attempt_type, success, confidence_score, 
                             response_time, failure_reason) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)''',
                         (username, request.remote_addr, 'face', 
                          best_confidence >= (min_quality * 100), best_confidence, 
                          response_time, None if best_confidence >= (min_quality * 100) else 'Low confidence'))
             conn.commit()
+            cursor.close()
             conn.close()
             
             if best_confidence >= (min_quality * 100):
@@ -742,11 +751,13 @@ def auth_fingerprint():
             session_expires = datetime.now() + timedelta(hours=24)
             
             conn = get_db()
-            conn.execute('''INSERT INTO user_sessions 
+            cursor = conn.cursor()
+            cursor.execute('''INSERT INTO user_sessions 
                            (username, session_id, device_fingerprint, ip_address, expires_at) 
-                           VALUES (?, ?, ?, ?, ?)''',
+                           VALUES (%s, %s, %s, %s, %s)''',
                         (username, session_id, device_fingerprint, request.remote_addr, session_expires))
             conn.commit()
+            cursor.close()
             conn.close()
             
             return jsonify({
@@ -776,12 +787,16 @@ def auth_fingerprint():
         try:
             # Get user data
             conn = get_db()
-            user = conn.execute('''SELECT fp_path, security_level, biometric_quality, last_login, login_count 
-                                  FROM users WHERE username = ? AND is_active = 1''', 
-                               (username,)).fetchone()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute('''SELECT fp_path, security_level, biometric_quality, last_login, login_count 
+                              FROM users WHERE username = %s AND is_active = true''', 
+                           (username,))
+            user = cursor.fetchone()
             
             if not user:
                 logger.warning(f"401 Debug: User not found for username={username}")
+                cursor.close()
+                conn.close()
                 log_security_event('AUTH_FAILED', username, 
                                  {'reason': 'User not found', 'attempt_type': 'fingerprint'}, 'warning')
                 return jsonify({'error': 'Authentication failed'}), 401
@@ -825,27 +840,27 @@ def auth_fingerprint():
             response_time = time.time() - start_time
             
             # Log authentication attempt
-            conn.execute('''INSERT INTO auth_attempts 
+            cursor.execute('''INSERT INTO auth_attempts 
                            (username, ip_address, attempt_type, success, confidence_score, 
                             response_time, failure_reason) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)''',
                         (username, request.remote_addr, 'fingerprint', 
                          match_result['match'], match_result['score'], 
                          response_time, None if match_result['match'] else 'Low confidence'))
             
             if match_result['match']:
                 # Update user login statistics
-                conn.execute('''UPDATE users 
+                cursor.execute('''UPDATE users 
                                SET last_login = CURRENT_TIMESTAMP, login_count = login_count + 1 
-                               WHERE username = ?''', (username,))
+                               WHERE username = %s''', (username,))
                 
                 # Create session
                 session_id = generate_session_token(username)
                 session_expires = datetime.now() + timedelta(hours=24)
                 
-                conn.execute('''INSERT INTO user_sessions 
+                cursor.execute('''INSERT INTO user_sessions 
                                (username, session_id, device_fingerprint, ip_address, expires_at) 
-                               VALUES (?, ?, ?, ?, ?)''',
+                               VALUES (%s, %s, %s, %s, %s)''',
                             (username, session_id, device_fingerprint, request.remote_addr, session_expires))
                 
                 conn.commit()
@@ -887,9 +902,9 @@ def auth_fingerprint():
                     'required': min_quality
                 }), 401
                 
-            conn.close()
-            
         finally:
+            cursor.close()
+            conn.close()
             # Clean up temporary file
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -917,6 +932,7 @@ def user_docs():
             return jsonify({'error': 'Unauthorized'}), 401
     
     conn = get_db()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     
     try:
         if request.method == 'POST':
@@ -952,11 +968,11 @@ def user_docs():
                 return jsonify({'error': 'File encryption failed'}), 500
             
             # Store metadata in database with hashed path
-            conn.execute('''INSERT INTO documents 
+            cursor.execute('''INSERT INTO documents 
                            (username, filename, original_name, file_hash, file_size, 
                             mime_type, encryption_key, file_path_hash, access_level, 
                             tags, metadata, created_at) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                         (username, secured_filename, original_name, file_hash, 
                          file_size, mime_type, encryption_key, path_hash, 'PRIVATE',
                          json.dumps([]), json.dumps({'upload_timestamp': timestamp}), 
@@ -980,11 +996,12 @@ def user_docs():
             
         elif request.method == 'GET':
             # Get user documents
-            docs = conn.execute('''SELECT filename, original_name, file_hash, file_size, 
-                                          mime_type, access_count, created_at, access_level,
-                                          tags, metadata, file_path_hash
-                                   FROM documents WHERE username = ? AND is_deleted = 0
-                                   ORDER BY created_at DESC''', (username,)).fetchall()
+            cursor.execute('''SELECT filename, original_name, file_hash, file_size, 
+                                     mime_type, access_count, created_at, access_level,
+                                     tags, metadata, file_path_hash
+                              FROM documents WHERE username = %s AND is_deleted = 0
+                              ORDER BY created_at DESC''', (username,))
+            docs = cursor.fetchall()
             
             documents = []
             for doc in docs:
@@ -1020,10 +1037,11 @@ def user_docs():
                 return jsonify({'error': 'No document specified'}), 400
             
             # Get document info using hashed path
-            doc = conn.execute('''SELECT filename, original_name, encryption_key, file_path_hash 
-                                 FROM documents 
-                                 WHERE username = ? AND file_path_hash = ? AND is_deleted = 0''', 
-                              (username, doc_id)).fetchone()
+            cursor.execute('''SELECT filename, original_name, encryption_key, file_path_hash 
+                             FROM documents 
+                             WHERE username = %s AND file_path_hash = %s AND is_deleted = 0''', 
+                          (username, doc_id))
+            doc = cursor.fetchone()
             
             if not doc:
                 return jsonify({'error': 'Document not found'}), 404
@@ -1046,9 +1064,9 @@ def user_docs():
                     os.remove(secure_file_path)
             
             # Mark as deleted in database (soft delete for audit trail)
-            conn.execute('''UPDATE documents 
-                           SET is_deleted = 1, deleted_at = ? 
-                           WHERE username = ? AND file_path_hash = ?''', 
+            cursor.execute('''UPDATE documents 
+                           SET is_deleted = 1, deleted_at = %s 
+                           WHERE username = %s AND file_path_hash = %s''', 
                         (datetime.now().isoformat(), username, doc_id))
             conn.commit()
             
@@ -1065,6 +1083,7 @@ def user_docs():
         logger.error(f"Document management error: {e}")
         return jsonify({'error': 'Document operation failed'}), 500
     finally:
+        cursor.close()
         conn.close()
 
 @app.route('/api/user/docs/download', methods=['GET'])
@@ -1085,15 +1104,19 @@ def download_document():
             return jsonify({'error': 'Unauthorized'}), 401
     
     conn = get_db()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     
     try:
         # Get document info
-        doc = conn.execute('''SELECT filename, original_name, encryption_key, file_size, mime_type
-                             FROM documents 
-                             WHERE username = ? AND file_path_hash = ? AND is_deleted = 0''', 
-                          (username, doc_id)).fetchone()
+        cursor.execute('''SELECT filename, original_name, encryption_key, file_size, mime_type
+                         FROM documents 
+                         WHERE username = %s AND file_path_hash = %s AND is_deleted = 0''', 
+                      (username, doc_id))
+        doc = cursor.fetchone()
         
         if not doc:
+            cursor.close()
+            conn.close()
             return jsonify({'error': 'Document not found'}), 404
         
         # Find the secure file path
@@ -1101,6 +1124,8 @@ def download_document():
         secure_file_path = os.path.join(user_secure_folder, doc['filename'])
         
         if not os.path.exists(secure_file_path):
+            cursor.close()
+            conn.close()
             return jsonify({'error': 'File not found on disk'}), 404
         
         # Create temporary decrypted file
@@ -1115,12 +1140,14 @@ def download_document():
         if not decrypt_file(temp_path, doc['encryption_key']):
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+            cursor.close()
+            conn.close()
             return jsonify({'error': 'File decryption failed'}), 500
         
         # Update access count
-        conn.execute('''UPDATE documents 
-                       SET access_count = access_count + 1, updated_at = ?
-                       WHERE username = ? AND file_path_hash = ?''', 
+        cursor.execute('''UPDATE documents 
+                       SET access_count = access_count + 1, updated_at = %s
+                       WHERE username = %s AND file_path_hash = %s''', 
                     (datetime.now().isoformat(), username, doc_id))
         conn.commit()
         
@@ -1154,6 +1181,7 @@ def download_document():
         logger.error(f"Document download error: {e}")
         return jsonify({'error': 'Download failed'}), 500
     finally:
+        cursor.close()
         conn.close()
 
 @app.route('/api/security/events', methods=['GET'])
@@ -1163,16 +1191,19 @@ def get_security_events():
     limit = int(request.args.get('limit', 50))
     
     conn = get_db()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         if username:
-            events = conn.execute('''SELECT * FROM security_events 
-                                    WHERE username = ? 
-                                    ORDER BY timestamp DESC LIMIT ?''', 
-                                 (username, limit)).fetchall()
+            cursor.execute('''SELECT * FROM security_events 
+                            WHERE username = %s 
+                            ORDER BY timestamp DESC LIMIT %s''', 
+                           (username, limit))
+            events = cursor.fetchall()
         else:
-            events = conn.execute('''SELECT * FROM security_events 
-                                    ORDER BY timestamp DESC LIMIT ?''', 
-                                 (limit,)).fetchall()
+            cursor.execute('''SELECT * FROM security_events 
+                            ORDER BY timestamp DESC LIMIT %s''', 
+                           (limit,))
+            events = cursor.fetchall()
         
         event_list = []
         for event in events:
@@ -1188,6 +1219,7 @@ def get_security_events():
         
         return jsonify({'events': event_list})
     finally:
+        cursor.close()
         conn.close()
 
 @app.route('/api/security/log', methods=['POST'])
@@ -1213,38 +1245,55 @@ def get_dashboard_analytics():
     days = int(request.args.get('days', 7))
     
     conn = get_db()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         # Get authentication statistics
-        auth_stats = conn.execute('''SELECT 
-                                       COUNT(*) as total_attempts,
-                                       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful,
-                                       AVG(response_time) as avg_response_time,
-                                       AVG(confidence_score) as avg_confidence
-                                     FROM auth_attempts 
-                                     WHERE timestamp > datetime('now', '-{} days')
-                                     {}'''.format(days, 
-                                                 f"AND username = '{username}'" if username else "")).fetchone()
+        if username:
+            cursor.execute('''SELECT 
+                             COUNT(*) as total_attempts,
+                             SUM(CASE WHEN success = true THEN 1 ELSE 0 END) as successful,
+                             AVG(response_time) as avg_response_time,
+                             AVG(confidence_score) as avg_confidence
+                            FROM auth_attempts 
+                            WHERE timestamp > NOW() - INTERVAL '%s days'
+                            AND username = %s''', (days, username))
+        else:
+            cursor.execute('''SELECT 
+                             COUNT(*) as total_attempts,
+                             SUM(CASE WHEN success = true THEN 1 ELSE 0 END) as successful,
+                             AVG(response_time) as avg_response_time,
+                             AVG(confidence_score) as avg_confidence
+                            FROM auth_attempts 
+                            WHERE timestamp > NOW() - INTERVAL '%s days' ''', (days,))
+        auth_stats = cursor.fetchone()
         
         # Get security events by type
-        event_stats = conn.execute('''SELECT event_type, COUNT(*) as count 
-                                     FROM security_events 
-                                     WHERE timestamp > datetime('now', '-{} days')
-                                     {} 
-                                     GROUP BY event_type'''.format(days,
-                                                                   f"AND username = '{username}'" if username else "")).fetchall()
+        if username:
+            cursor.execute('''SELECT event_type, COUNT(*) as count 
+                            FROM security_events 
+                            WHERE timestamp > NOW() - INTERVAL '%s days'
+                            AND username = %s
+                            GROUP BY event_type''', (days, username))
+        else:
+            cursor.execute('''SELECT event_type, COUNT(*) as count 
+                            FROM security_events 
+                            WHERE timestamp > NOW() - INTERVAL '%s days'
+                            GROUP BY event_type''', (days,))
+        event_stats = cursor.fetchall()
         
         # Get user activity
-        user_activity = conn.execute('''SELECT 
-                                          COUNT(DISTINCT username) as active_users,
-                                          COUNT(*) as total_sessions
-                                        FROM user_sessions 
-                                        WHERE created_at > datetime('now', '-{} days')'''.format(days)).fetchone()
+        cursor.execute('''SELECT 
+                         COUNT(DISTINCT username) as active_users,
+                         COUNT(*) as total_sessions
+                        FROM user_sessions 
+                        WHERE created_at > NOW() - INTERVAL '%s days' ''', (days,))
+        user_activity = cursor.fetchone()
         
         analytics = {
             'authentication': {
                 'total_attempts': auth_stats['total_attempts'] or 0,
                 'successful_attempts': auth_stats['successful'] or 0,
-                'success_rate': (auth_stats['successful'] / max(auth_stats['total_attempts'], 1)) * 100,
+                'success_rate': (auth_stats['successful'] / max(auth_stats['total_attempts'], 1)) * 100 if auth_stats['total_attempts'] else 0,
                 'average_response_time': auth_stats['avg_response_time'] or 0,
                 'average_confidence': auth_stats['avg_confidence'] or 0
             },
@@ -1257,6 +1306,7 @@ def get_dashboard_analytics():
         
         return jsonify(analytics)
     finally:
+        cursor.close()
         conn.close()
 
 @app.route('/uploads/<path:filename>')
@@ -1313,12 +1363,16 @@ def user_profile():
         return jsonify({'error': 'Missing username'}), 400
 
     conn = get_db()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         if request.method == 'GET':
-            user = conn.execute('''SELECT username, email, phone_number, security_level,
-                                          last_login, login_count, created_at, updated_at
-                                   FROM users WHERE username = ?''', (username,)).fetchone()
+            cursor.execute('''SELECT username, email, phone_number, security_level,
+                             last_login, login_count, created_at, updated_at
+                      FROM users WHERE username = %s''', (username,))
+            user = cursor.fetchone()
             if not user:
+                cursor.close()
+                conn.close()
                 return jsonify({'error': 'User not found'}), 404
             return jsonify({
                 'username': user['username'],
@@ -1336,22 +1390,24 @@ def user_profile():
             phone_number = data.get('phoneNumber')
             security_level = data.get('securityLevel')
             if email is None and phone_number is None and security_level is None:
+                cursor.close()
+                conn.close()
                 return jsonify({'error': 'No fields to update'}), 400
             fields = []
             params = []
             if email is not None:
-                fields.append('email = ?')
+                fields.append('email = %s')
                 params.append(email)
             if phone_number is not None:
-                fields.append('phone_number = ?')
+                fields.append('phone_number = %s')
                 params.append(phone_number)
             if security_level is not None:
-                fields.append('security_level = ?')
+                fields.append('security_level = %s')
                 params.append(security_level)
-            fields.append('updated_at = ?')
+            fields.append('updated_at = %s')
             params.append(datetime.now().isoformat())
             params.append(username)
-            conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE username = ?", params)
+            cursor.execute(f"UPDATE users SET {', '.join(fields)} WHERE username = %s", params)
             conn.commit()
             log_security_event('PROFILE_UPDATED', username, {'fields': list(data.keys())}, 'info')
             return jsonify({'message': 'Profile updated'})
@@ -1359,6 +1415,7 @@ def user_profile():
         logger.error(f"Profile API error: {e}")
         return jsonify({'error': 'Profile operation failed'}), 500
     finally:
+        cursor.close()
         conn.close()
 
 @app.route('/api/user/settings', methods=['GET', 'PUT'])
@@ -1368,9 +1425,11 @@ def user_settings():
         return jsonify({'error': 'Missing username'}), 400
 
     conn = get_db()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         if request.method == 'GET':
-            row = conn.execute('SELECT settings FROM user_settings WHERE username = ?', (username,)).fetchone()
+            cursor.execute('SELECT settings FROM user_settings WHERE username = %s', (username,))
+            row = cursor.fetchone()
             if row and row['settings']:
                 try:
                     return jsonify(json.loads(row['settings']))
@@ -1398,11 +1457,13 @@ def user_settings():
         else:  # PUT
             settings = request.json.get('settings')
             if not isinstance(settings, dict):
+                cursor.close()
+                conn.close()
                 return jsonify({'error': 'Invalid settings'}), 400
             settings_json = json.dumps(settings)
-            conn.execute(
+            cursor.execute(
                 """
-                INSERT INTO user_settings(username, settings, updated_at) VALUES(?, ?, ?)
+                INSERT INTO user_settings(username, settings, updated_at) VALUES(%s, %s, %s)
                 ON CONFLICT(username) DO UPDATE SET 
                     settings = excluded.settings, 
                     updated_at = excluded.updated_at
@@ -1415,6 +1476,7 @@ def user_settings():
         logger.error(f"Settings API error: {e}")
         return jsonify({'error': 'Settings operation failed'}), 500
     finally:
+        cursor.close()
         conn.close()
 
 # Background tasks
@@ -1422,8 +1484,10 @@ def cleanup_expired_sessions():
     """Clean up expired sessions"""
     try:
         conn = get_db()
-        conn.execute('DELETE FROM user_sessions WHERE expires_at < CURRENT_TIMESTAMP')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM user_sessions WHERE expires_at < CURRENT_TIMESTAMP')
         conn.commit()
+        cursor.close()
         conn.close()
         logger.info("Expired sessions cleaned up")
     except Exception as e:
