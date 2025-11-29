@@ -6,7 +6,6 @@ import os
 import sys
 import json
 import hashlib
-import sqlite3
 import logging
 import time
 import shutil
@@ -19,6 +18,8 @@ import base64
 import hmac
 from typing import Dict, List, Optional, Tuple
 from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 load_dotenv()
 
@@ -47,7 +48,7 @@ except (ImportError, AttributeError) as e:
 # Configuration
 UPLOAD_FOLDER = 'webapp/uploads'
 SECURE_DOCS_FOLDER = 'webapp/secure_docs'  # New secure folder for documents
-DB_PATH = 'webapp/enhanced_users.db'
+DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///enhanced_users.db')
 LOG_PATH = 'webapp/security.log'
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 ALLOWED_FP_EXTENSIONS = {'bmp', 'png'}
@@ -118,19 +119,23 @@ def allowed_file(filename: str, allowed_extensions: set) -> bool:
     """Check if file extension is allowed"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
-def get_db() -> sqlite3.Connection:
+def get_db():
     """Get database connection with enhanced schema"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
+    except psycopg2.OperationalError as e:
+        logger.error(f"Database connection failed: {e}")
+        raise
 
 def init_database():
     """Initialize enhanced database schema"""
     conn = get_db()
+    cursor = conn.cursor()
     try:
         # Users table with enhanced fields
-        conn.execute('''CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             email TEXT,
             phone_number TEXT,
@@ -145,13 +150,13 @@ def init_database():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_login TIMESTAMP,
             login_count INTEGER DEFAULT 0,
-            is_active BOOLEAN DEFAULT 1,
-            is_verified BOOLEAN DEFAULT 0
+            is_active BOOLEAN DEFAULT true,
+            is_verified BOOLEAN DEFAULT false
         )''')
         
         # Security events table
-        conn.execute('''CREATE TABLE IF NOT EXISTS security_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cursor.execute('''CREATE TABLE IF NOT EXISTS security_events (
+            id SERIAL PRIMARY KEY,
             event_type TEXT NOT NULL,
             username TEXT,
             ip_address TEXT,
@@ -164,8 +169,8 @@ def init_database():
         )''')
         
         # Authentication attempts table
-        conn.execute('''CREATE TABLE IF NOT EXISTS auth_attempts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cursor.execute('''CREATE TABLE IF NOT EXISTS auth_attempts (
+            id SERIAL PRIMARY KEY,
             username TEXT,
             ip_address TEXT,
             attempt_type TEXT,
@@ -177,20 +182,20 @@ def init_database():
         )''')
         
         # User sessions table
-        conn.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
+            id SERIAL PRIMARY KEY,
             username TEXT NOT NULL,
             session_id TEXT UNIQUE NOT NULL,
             device_fingerprint TEXT,
             ip_address TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             expires_at TIMESTAMP,
-            is_active BOOLEAN DEFAULT 1
+            is_active BOOLEAN DEFAULT true
         )''')
         
         # Documents table with enhanced metadata
-        conn.execute('''CREATE TABLE IF NOT EXISTS documents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cursor.execute('''CREATE TABLE IF NOT EXISTS documents (
+            id SERIAL PRIMARY KEY,
             username TEXT NOT NULL,
             filename TEXT NOT NULL,
             original_name TEXT,
@@ -209,53 +214,18 @@ def init_database():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
-        # Migration: add missing columns if upgrading from older schema
-        existing_cols = [r['name'] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
-        migrations = [
-            ("ALTER TABLE documents ADD COLUMN access_level TEXT DEFAULT 'PRIVATE'", 'access_level'),
-            ("ALTER TABLE documents ADD COLUMN tags TEXT", 'tags'),
-            ("ALTER TABLE documents ADD COLUMN metadata TEXT", 'metadata'),
-            # Add without UNIQUE constraint; enforce uniqueness via index
-            ("ALTER TABLE documents ADD COLUMN file_path_hash TEXT", 'file_path_hash'),
-            ("ALTER TABLE documents ADD COLUMN is_deleted INTEGER DEFAULT 0", 'is_deleted'),
-            ("ALTER TABLE documents ADD COLUMN deleted_at TIMESTAMP", 'deleted_at')
-        ]
-        for sql, col in migrations:
-            if col not in existing_cols:
-                try:
-                    conn.execute(sql)
-                except Exception as e:
-                    logger.warning(f"Migration step skipped for column {col}: {e}")
-
         # Ensure unique index on file_path_hash
-        try:
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS documents_file_path_hash_idx ON documents(file_path_hash)")
-        except Exception as e:
-            logger.warning(f"Could not create unique index on file_path_hash: {e}")
-
-        # Backfill file_path_hash for existing rows where missing
-        try:
-            rows = conn.execute("SELECT id, username, filename FROM documents WHERE file_path_hash IS NULL OR file_path_hash = ''").fetchall()
-            for row in rows:
-                try:
-                    user_secure_folder = get_user_secure_folder(row['username'])
-                    secure_file_path = os.path.join(user_secure_folder, row['filename'])
-                    path_hash = hashlib.sha256(secure_file_path.encode()).hexdigest()
-                    conn.execute("UPDATE documents SET file_path_hash = ? WHERE id = ?", (path_hash, row['id']))
-                except Exception as be:
-                    logger.warning(f"Backfill failed for document id={row['id']}: {be}")
-        except Exception as e:
-            logger.warning(f"Backfill query failed: {e}")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS documents_file_path_hash_idx ON documents(file_path_hash)")
         
         # System settings table
-        conn.execute('''CREATE TABLE IF NOT EXISTS system_settings (
+        cursor.execute('''CREATE TABLE IF NOT EXISTS system_settings (
             key TEXT PRIMARY KEY,
             value TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
         # Per-user settings table (JSON blob for flexibility)
-        conn.execute('''CREATE TABLE IF NOT EXISTS user_settings (
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_settings (
             username TEXT PRIMARY KEY,
             settings TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -267,24 +237,27 @@ def init_database():
         logger.error(f"Database initialization failed: {e}")
         conn.rollback()
     finally:
+        cursor.close()
         conn.close()
 
 def log_security_event(event_type: str, username: str = None, details: dict = None, severity: str = 'info'):
     """Log security events to database and file"""
     try:
         conn = get_db()
+        cursor = conn.cursor()
         ip_address = request.remote_addr if request else 'system'
         user_agent = request.headers.get('User-Agent', '') if request else 'system'
         device_fingerprint = request.form.get('deviceFingerprint', '') if request else ''
         location = request.form.get('location', '') if request else ''
         
-        conn.execute('''INSERT INTO security_events 
+        cursor.execute('''INSERT INTO security_events 
                        (event_type, username, ip_address, user_agent, device_fingerprint, 
                         location, severity, details) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
                     (event_type, username, ip_address, user_agent, device_fingerprint,
                      location, severity, json.dumps(details) if details else None))
         conn.commit()
+        cursor.close()
         conn.close()
         
         logger.info(f"Security event: {event_type} - User: {username} - IP: {ip_address}")
