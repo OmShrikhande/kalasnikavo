@@ -18,6 +18,9 @@ import uuid
 import base64
 import hmac
 from typing import Dict, List, Optional, Tuple
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Ensure biometrics package is importable
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -49,8 +52,8 @@ LOG_PATH = 'webapp/security.log'
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 ALLOWED_FP_EXTENSIONS = {'bmp', 'png'}
 MAX_FACE_IMAGES = 5
-SECRET_KEY = 'your-super-secret-key-change-in-production'
-JWT_SECRET = 'jwt-secret-key-change-in-production'
+SECRET_KEY = os.getenv('SECRET_KEY', 'your-super-secret-key-change-in-production')
+JWT_SECRET = os.getenv('JWT_SECRET', 'jwt-secret-key-change-in-production')
 
 # Security Configuration
 SECURITY_LEVELS = {
@@ -75,8 +78,8 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SECRET_KEY'] = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 
-# Enable CORS
-CORS(app, origins=["http://localhost:3000", "http://localhost:5173"], supports_credentials=True)
+allowed_origins = os.getenv('ALLOWED_ORIGINS', "http://localhost:3000,http://localhost:5173").split(',')
+CORS(app, origins=allowed_origins, supports_credentials=True)
 
 # Initialize rate limiter
 # Initialize rate limiter (Flask-Limiter v3 style)
