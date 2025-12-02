@@ -60,403 +60,186 @@ The **Dual Biometric Recognition System** is a cutting-edge security solution th
 ### 1. Backend (Flask)
 
 #### Install Python dependencies
-```sh
-pip install flask werkzeug numpy opencv-python scikit-learn deepface scikit-image pandas matplotlib
+        'model': 'DeepFace',
+# Dual Biometric Recognition — README
+
+Short, accurate project README focused on how to use and run the repository locally.
+
+---
+
+## Overview
+
+This repository contains code and resources for a research-grade dual biometric recognition system combining facial and fingerprint recognition. The project includes:
+
+- Python modules for face and fingerprint processing (`faceOM.py`, `oldfingerprintom.py`, `biometrics/` package)
+- Scripts for experiments and analysis (`run_complete_analysis.py`, `research_analysis.py`, `facefingerdev.py`)
+- GUI applications (`facial_recognition_gui.py`, `fingerprint_gui.py`)
+- A small React + Flask webapp under `webapp/` (frontend in `webapp/src`, backend entry: `webapp/app_enhanced.py`)
+- Unit tests in `tests/` and documentation in `docs/`.
+
+This README explains how to set up the environment, run common tasks, and where to look in the codebase.
+
+---
+
+## Requirements
+
+- Python 3.8+ (3.10 or 3.11 recommended)
+- Git (for cloning and contributing)
+- Optional: Node.js and npm (for running the frontend in `webapp/`)
+
+- Install Python dependencies with the repository `requirements.txt` (root). The file may contain packages for both the core project and the webapp.
+
+---
+
+## Quick Setup (Windows PowerShell)
+
+1. Create and activate a virtual environment:
+
+```powershell
+python -m venv .venv
+& .venv\\Scripts\\Activate.ps1
 ```
 
-#### Run the backend
-```sh
-python webapp/app.py
+2. Install Python dependencies:
+
+```powershell
+pip install -r requirements.txt
 ```
-- The backend will start on http://localhost:5000
 
-### 2. Frontend (React + Vite)
+3. (Optional) Install frontend deps and run the webapp frontend:
 
-#### Install Node.js dependencies
-```sh
+```powershell
 cd webapp
 npm install
-```
-
-#### Run the frontend
-```sh
 npm run dev
 ```
-- The frontend will start on http://localhost:3000
-- The frontend proxies API requests to the Flask backend.
 
----
+Note: The backend Flask app used by the frontend is `webapp/app_enhanced.py` (not `app.py`). Start it from the repo root or `webapp` directory so relative imports and paths resolve correctly.
 
-## Usage
-
-### Registration
-1. Click "Register New User".
-2. Enter a username, upload a face image and a fingerprint (bmp).
-3. Submit to register. User is stored in the database.
-
-### Authentication
-1. Enter your username.
-2. Upload your face image and authenticate.
-3. If face matches, upload your fingerprint and authenticate.
-4. If both match, access is granted.
-
----
-
-## API Endpoints
-- `POST /api/register` — Register a new user (fields: username, face, fingerprint)
-- `POST /api/auth/face` — Authenticate face (fields: username, face)
-- `POST /api/auth/fingerprint` — Authenticate fingerprint (fields: username, fingerprint)
-
----
-
-## Project Structure
+```powershell
+# from repo root
+python webapp\\app_enhanced.py
 ```
-webapp/
-  app.py           # Flask backend
-  users.db         # SQLite database (auto-created)
-  uploads/         # Uploaded biometric files
-  src/             # React frontend source
-    App.jsx        # Main React app
-    main.jsx       # Entry point
-    index.html     # HTML template
-  package.json     # Frontend dependencies
-  vite.config.js   # Vite config (API proxy)
+
+The default Flask port is typically `5000`; the Vite frontend runs on `3000` and proxies API calls to the backend (see `webapp/vite.config.js`).
+
+---
+
+## Common Tasks
+
+- Run the GUI apps (Tkinter-based):
+
+```powershell
+python facial_recognition_gui.py
+python fingerprint_gui.py
+```
+
+- Run a full analysis or evaluation script (examples):
+
+```powershell
+python run_complete_analysis.py
+python research_analysis.py
+```
+
+- Generate graphs and reports:
+
+```powershell
+python generate_comparison_graphs.py
+python generate_scaling_analysis.py
+python plot_epoch_metrics.py
 ```
 
 ---
 
-## Security & Best Practices
-- All file uploads are validated and stored securely.
-- Passwords are not used; authentication is biometric only.
-- Logging and error handling are implemented throughout.
-- For production, use HTTPS and secure deployment practices.
+## Tests
+
+Run unit tests with `pytest` from the repository root:
+
+```powershell
+python -m pytest tests/
+```
+
+You can also run a single test file, e.g.: `python -m pytest tests/test_face.py`.
 
 ---
 
-## Extending Functionality
-- Add password or OTP as a third factor for even higher security.
-- Integrate with cloud storage or a more robust database.
-- Add user management/admin dashboard.
-- Deploy with Docker for easy production use.
+## Datasets & Results
+
+- Facial images: `facialDataset/Faces/`
+- Fingerprint images: `fingerprintDataset/real/` and `fingerprintDataset/altered/`
+- Analysis outputs and experiment results: `results/` and subfolders (e.g. `results/faceom/`)
+
+Datasets are not included in the repository (large/binary files). Place your datasets into the directories above or update script paths to point to your dataset locations.
+
+---
+
+## Code Structure (high level)
+
+- `biometrics/` — core reusable package with `config.py`, `face.py`, `fingerprint.py`, `utils.py`, and `parallel.py`.
+- `*.py` scripts at repo root — experimental scripts, GUI launchers, and reporting utilities.
+- `webapp/` — small web application: `app_enhanced.py` (backend), `src/` (frontend React), `package.json`.
+- `docs/` — Sphinx documentation and built HTML in `docs/_build/`.
+- `tests/` — pytest unit tests.
+
+---
+
+## Development & Contributing
+
+Please follow these steps when contributing:
+
+1. Fork the repository and create a feature branch.
+2. Create a virtual environment and install dependencies.
+3. Add tests for new features and ensure existing tests pass.
+4. Open a pull request with a clear description of changes.
+
+Coding guidelines:
+
+- Follow PEP 8 and prefer type hints for public function signatures.
+- Keep modules small and focused; put reusable logic in `biometrics/`.
+- Document functions with docstrings and update `biometrics/README_API.md` when changing public APIs.
+
+---
+
+## Documentation
+
+Project documentation is available in the `docs/` folder. A local HTML build is available at `docs/_build/html/index.html` if Sphinx has been run.
+
+To build docs locally:
+
+```powershell
+pip install -r docs/requirements.txt
+cd docs
+make html
+```
+
+Open `docs/_build/html/index.html` in your browser when the build completes.
+
+---
+
+## Troubleshooting & Notes
+
+- If you see errors importing `deepface` or `tensorflow`, ensure your environment matches the versions in `requirements.txt` and that a compatible `tensorflow` wheel is installed for your OS/Python.
+- For Windows users, running heavy model training without a GPU may be slow; consider using a cloud VM with GPU or limiting dataset sizes for local experiments.
+- The webapp frontend expects the backend to expose specific endpoints; inspect `webapp/src` and `webapp/app_enhanced.py` for the available API routes.
 
 ---
 
 ## License
-MIT License
+
+This project is provided under the MIT License (see `LICENSE` in the repository).
 
 ---
 
-## Support
-For issues or feature requests, open an issue on the project repository.
+## Acknowledgements
+
+This project uses open-source libraries such as OpenCV, TensorFlow, DeepFace, and scikit-learn. See `requirements.txt` for a complete list of Python dependencies.
 
 ---
 
-## 🏗️ System Architecture
+If you'd like, I can also:
 
-```mermaid
-graph TD
-    A[Input Layer] --> B[Face Detection Module]
-    A --> C[Fingerprint Detection Module]
-    
-    B --> D[DeepFace Engine]
-    B --> E[ResNet50 Feature Extractor]
-    
-    C --> F[Minutiae Extraction]
-    C --> G[Pattern Analysis]
-    
-    D --> H[Facial Feature Vector]
-    E --> H
-    F --> I[Fingerprint Feature Vector]
-    G --> I
-    
-    H --> J[Fusion Algorithm]
-    I --> J
-    
-    J --> K[Classification Models]
-    K --> L[KNN Classifier]
-    K --> M[SVM Classifier]
-    K --> N[Ensemble Model]
-    
-    L --> O[Authentication Result]
-    M --> O
-    N --> O
-    
-    O --> P[Security Decision]
-```
-
----
-
-## 📁 Project Structure
-
-```
-📦 dual-biometric-recognition/
-├── 🎯 Core Modules
-│   ├── 📄 faceOM.py                    # Facial recognition engine
-│   ├── 📄 oldfingerprintom.py          # Fingerprint analysis engine
-│   ├── 📄 facefingerdev.py             # Model training & evaluation
-│   └── 📄 plot_epoch_metrics.py        # Performance visualization
-├── 🖥️ GUI Applications
-│   ├── 📄 facial_recognition_gui.py    # Facial recognition interface
-│   ├── 📄 fingerprint_gui.py           # Combined system interface
-│   └── 📄 facefingerdev.py             # Development interface
-├── 🤖 Machine Learning Models
-│   ├── 📄 knn_model.pkl                # K-Nearest Neighbors model
-│   ├── 📄 svm_fingerprint_model.pkl    # Support Vector Machine model
-│   └── 📄 siamese_fingerprint_model_light.h5  # Siamese network model
-├── 📊 Datasets
-│   ├── 📁 facialDataset/
-│   │   ├── 📁 Faces/
-│   │   └── 📄 Dataset.csv
-│   └── 📁 fingerprintDataset/
-│       ├── 📁 real/
-│       └── 📁 altered/
-├── 📈 Analysis & Reporting
-│   ├── 📄 generate_comparison_graphs.py
-│   ├── 📄 generate_scaling_analysis.py
-│   └── 📁 results/
-├── 🔧 Configuration
-│   ├── 📄 requirements.txt
-│   ├── 📄 .gitignore
-│   └── 📄 setup.py
-└── 📚 Documentation
-    ├── 📄 README.md
-    └── 📁 docs/
-```
-
----
-
-## 🎨 User Interface
-
-### 🖼️ **Main Dashboard**
-The system features a modern, dark-themed interface with real-time processing capabilities:
-
-- **📱 Responsive Design**: Adapts to different screen sizes
-- **🌙 Dark Theme**: Reduced eye strain for extended use
-- **⚡ Real-time Logs**: Live processing feedback
-- **📊 Progress Indicators**: Visual processing status
-- **🔄 Multi-panel Layout**: Simultaneous face and fingerprint processing
-
-### 🎯 **Features Showcase**
-
-#### 🔐 **Authentication Flow**
-1. **User Selection**: Choose facial image or fingerprint
-2. **Processing**: Real-time analysis with progress tracking
-3. **Matching**: Database comparison and similarity scoring
-4. **Results**: Confidence levels and match details
-5. **Decision**: Authentication success/failure
-
----
-
-## 🧪 Performance Metrics
-
-### 📊 **Facial Recognition Performance**
-- **Accuracy**: 95.7% ± 2.3%
-- **Precision**: 94.8% ± 1.9%
-- **Recall**: 96.2% ± 2.1%
-- **F1-Score**: 95.5% ± 1.8%
-- **Processing Time**: 0.8-1.2 seconds per image
-
-### 👆 **Fingerprint Recognition Performance**
-- **Accuracy**: 97.2% ± 1.8%
-- **Precision**: 96.9% ± 1.5%
-- **Recall**: 97.5% ± 1.7%
-- **F1-Score**: 97.2% ± 1.4%
-- **Processing Time**: 1.2-1.8 seconds per fingerprint
-
-### 🔀 **Fusion System Performance**
-- **Combined Accuracy**: 98.5% ± 1.2%
-- **False Acceptance Rate**: 0.8%
-- **False Rejection Rate**: 1.2%
-- **Equal Error Rate**: 1.0%
-
----
-
-## 🔬 Technical Specifications
-
-### 🧠 **Machine Learning Models**
-
-#### 🎭 **Facial Recognition Stack**
-- **Primary**: DeepFace (VGG-Face, FaceNet, OpenFace)
-- **Feature Extraction**: ResNet50 (ImageNet pre-trained)
-- **Similarity Metrics**: Cosine similarity, Euclidean distance
-- **Optimization**: Adam optimizer with learning rate scheduling
-
-#### 👆 **Fingerprint Analysis Stack**
-- **Feature Extraction**: Minutiae detection, Ridge analysis
-- **Pattern Recognition**: Gabor filters, Local Binary Patterns
-- **Classification**: SVM (RBF kernel), KNN (k=5)
-- **Enhancement**: Gaussian filtering, Histogram equalization
-
-### 🛠️ **Technology Stack**
-
-#### 📚 **Core Libraries**
-```python
-# Deep Learning & Computer Vision
-tensorflow>=2.8.0
-opencv-python>=4.5.0
-deepface>=0.0.75
-scikit-image>=0.19.0
-
-# Machine Learning
-scikit-learn>=1.0.0
-numpy>=1.21.0
-pandas>=1.3.0
-
-# GUI & Visualization
-tkinter>=8.6
-matplotlib>=3.5.0
-seaborn>=0.11.0
-
-# Utilities
-pillow>=8.3.0
-scipy>=1.7.0
-```
-
-#### 🖥️ **System Requirements**
-- **OS**: Windows 10/11, macOS 10.14+, Ubuntu 18.04+
-- **Python**: 3.8+
-- **RAM**: 8GB minimum (16GB recommended)
-- **Storage**: 2GB free space
-- **GPU**: Optional (CUDA-compatible for faster processing)
-
----
-
-## 📊 Usage Examples
-
-### 🎯 **Basic Usage**
-
-#### 👤 **Facial Recognition**
-```python
-from faceOM import find_most_similar
-
-# Perform facial recognition
-image_path = "path/to/your/image.jpg"
-dataset_path = "facialDataset/Faces/Faces"
-
-best_match, time_taken = find_most_similar(
-    image_path, 
-    dataset_path, 
-    log_callback=print
-)
-
-print(f"Best match: {best_match['Image']}")
-print(f"Confidence: {best_match['Confidence (%)']}%")
-print(f"Time taken: {time_taken:.2f} seconds")
-```
-
-#### 👆 **Fingerprint Recognition**
-```python
-from oldfingerprintom import compare_fingerprints
-
-# Perform fingerprint recognition
-fingerprint_path = "path/to/fingerprint.bmp"
-results = compare_fingerprints(fingerprint_path)
-
-print(f"Match found: {results['match']}")
-print(f"Confidence: {results['confidence']:.2f}%")
-```
-
-### 🔄 **Advanced Usage**
-
-#### 🎯 **Dual Authentication**
-```python
-from fingerprint_gui import CombinedGUI
-import tkinter as tk
-
-# Launch the combined system
-root = tk.Tk()
-app = CombinedGUI(root)
-root.mainloop()
-```
-
-#### 📊 **Performance Analysis**
-```python
-from facefingerdev import FaceProcessor
-from generate_comparison_graphs import generate_plots
-
-# Train and evaluate models
-processor = FaceProcessor("dataset/path")
-processor.load_data()
-results = processor.train_models()
-
-# Generate performance reports
-generate_plots(results)
-```
-
----
-
-## 🎨 Customization & Configuration
-
-### ⚙️ **Configuration Options**
-
-#### 🎛️ **Model Parameters**
-```python
-# config.py
-CONFIG = {
-    'face_recognition': {
-        'model': 'DeepFace',
-        'backend': 'opencv',
-        'confidence_threshold': 0.7,
-        'max_results': 10
-    },
-    'fingerprint_recognition': {
-        'algorithm': 'minutiae',
-        'enhancement': True,
-        'noise_reduction': True,
-        'similarity_threshold': 0.8
-    },
-    'fusion_system': {
-        'weight_face': 0.6,
-        'weight_fingerprint': 0.4,
-        'decision_threshold': 0.75
-    }
-}
-```
-
-#### 🎨 **UI Customization**
-```python
-# ui_config.py
-UI_CONFIG = {
-    'theme': 'dark',
-    'colors': {
-        'primary': '#1e1e2f',
-        'secondary': '#2b2b3d',
-        'accent': '#ffffff',
-        'success': '#00ff00',
-        'error': '#ff0000'
-    },
-    'fonts': {
-        'primary': 'Arial',
-        'monospace': 'Consolas'
-    }
-}
-```
-
----
-
-### 🧪 Testing & Validation
-
-#### 🔬 **Testing Framework**
-```bash
-# Run all tests (unit tests for biometrics modules)
-python -m pytest tests/
-
-# Run specific test categories
-python -m pytest tests/test_face.py
-python -m pytest tests/test_fingerprint.py
-python -m pytest tests/test_utils.py
-
-# Generate coverage report
-python -m pytest --cov=biometrics tests/
-```
-
-#### ⚡ **Parallelization**
-- Feature extraction and comparison logic is designed for future parallel execution using Python's `concurrent.futures`.
-- For large datasets, you can enable parallel processing in the biometrics modules (see code comments for guidance).
-
-#### 📚 **API Documentation**
-- Full API documentation for the biometrics package is available in `biometrics/README_API.md`.
-- All public functions are documented with type hints and docstrings.
+- run the test suite now (`pytest`) and report results,
+- update `webapp/README` or create a small `CONTRIBUTING.md` with contribution templates.
 
 ---
 

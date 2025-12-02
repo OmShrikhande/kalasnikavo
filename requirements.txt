@@ -50,3 +50,6 @@ mypy>=0.910
 
 # For enhanced fingerprint processing
 opencv-contrib-python>=4.5.0
+
+# for blockchain integration
+web3>=5.25.0

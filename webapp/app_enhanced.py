@@ -32,6 +32,15 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+from blockchain_client import (
+    log_biometric_event,
+    get_all_logs,
+    get_log,
+    verify_metadata,
+    store_metadata,
+    retrieve_metadata,
+    get_total_logs,
+)
 
 # Import biometric modules
 try:
@@ -78,6 +87,7 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SECRET_KEY'] = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+
 
 allowed_origins = os.getenv('ALLOWED_ORIGINS', "http://localhost:3000,http://localhost:5173").split(',')
 CORS(app, origins=allowed_origins, supports_credentials=True)
@@ -520,14 +530,34 @@ def register():
             # Get the last inserted row ID
             user_id = cursor.fetchone()[0]
             
+            metadata = {
+                'email': email,
+                'security_level': security_level,
+                'face_quality': avg_face_quality,
+                'fingerprint_quality': fp_quality,
+                'registration_time': time.time() - start_time,
+                'device_fingerprint': device_fingerprint,
+                'registration_location': registration_location
+            }
+            
+            blockchain_result = log_biometric_event(
+                user_internal_id=str(user_id),
+                event_type='ENROLL',
+                meta_obj=metadata
+            )
+            
             # Log successful registration
             log_security_event('USER_REGISTERED', username, {
                 'email': email,
                 'security_level': security_level,
                 'face_quality': avg_face_quality,
                 'fingerprint_quality': fp_quality,
-                'registration_time': time.time() - start_time
+                'registration_time': time.time() - start_time,
+                'blockchain_tx': blockchain_result.get('tx_hash') if blockchain_result else None
             }, 'info')
+            
+            if blockchain_result:
+                store_metadata(str(user_id), blockchain_result.get('log_index'), metadata)
             
             logger.info(f"User {username} registered successfully with {security_level} security")
             
@@ -535,7 +565,8 @@ def register():
                 'message': 'Registration successful',
                 'user_id': user_id,
                 'biometric_quality': biometric_quality,
-                'security_level': security_level
+                'security_level': security_level,
+                'blockchain': blockchain_result
             })
             
         except psycopg2.IntegrityError as e:
@@ -661,7 +692,10 @@ def auth_face():
             
             response_time = time.time() - start_time
             
-            # Log authentication attempt
+            cursor.execute('SELECT id FROM users WHERE username = %s', (username,))
+            user_record = cursor.fetchone()
+            user_id = user_record[0] if user_record else None
+            
             cursor.execute('''INSERT INTO auth_attempts 
                            (username, ip_address, attempt_type, success, confidence_score, 
                             response_time, failure_reason) 
@@ -674,21 +708,56 @@ def auth_face():
             conn.close()
             
             if best_confidence >= (min_quality * 100):
+                metadata = {
+                    'confidence': best_confidence,
+                    'response_time': response_time,
+                    'quality': submitted_quality,
+                    'device_fingerprint': device_fingerprint,
+                    'ip_address': request.remote_addr,
+                    'location': location
+                }
+                
+                blockchain_result = log_biometric_event(
+                    user_internal_id=str(user_id),
+                    event_type='AUTH_SUCCESS',
+                    meta_obj=metadata
+                )
+                
                 log_security_event('FACE_AUTH_SUCCESS', username, {
                     'confidence': best_confidence,
                     'response_time': response_time,
-                    'quality': submitted_quality
+                    'quality': submitted_quality,
+                    'blockchain_tx': blockchain_result.get('tx_hash') if blockchain_result else None
                 }, 'info')
+                
+                if blockchain_result:
+                    store_metadata(str(user_id), blockchain_result.get('log_index'), metadata)
                 
                 return jsonify({
                     'success': True,
                     'confidence': best_confidence,
                     'quality': submitted_quality,
-                    'response_time': response_time
+                    'response_time': response_time,
+                    'blockchain': blockchain_result
                 })
             else:
                 logger.warning(f"401 Debug: Face not recognized for username={username}, confidence={best_confidence}, required={min_quality * 100}")
-                # Add to failed attempts
+                
+                metadata = {
+                    'confidence': best_confidence,
+                    'required': min_quality * 100,
+                    'response_time': response_time,
+                    'device_fingerprint': device_fingerprint,
+                    'ip_address': request.remote_addr,
+                    'location': location
+                }
+                
+                blockchain_result = log_biometric_event(
+                    user_internal_id=str(user_id),
+                    event_type='AUTH_FAIL',
+                    meta_obj=metadata
+                )
+                
                 key = f"{username}:face_auth"
                 if key not in failed_attempts:
                     failed_attempts[key] = []
@@ -697,14 +766,19 @@ def auth_face():
                 log_security_event('FACE_AUTH_FAILED', username, {
                     'confidence': best_confidence,
                     'required': min_quality * 100,
-                    'response_time': response_time
+                    'response_time': response_time,
+                    'blockchain_tx': blockchain_result.get('tx_hash') if blockchain_result else None
                 }, 'warning')
+                
+                if blockchain_result:
+                    store_metadata(str(user_id), blockchain_result.get('log_index'), metadata)
                 
                 return jsonify({
                     'success': False,
                     'error': 'Face not recognized',
                     'confidence': best_confidence,
-                    'required': min_quality * 100
+                    'required': min_quality * 100,
+                    'blockchain': blockchain_result
                 }), 401
                 
         finally:
@@ -839,7 +913,10 @@ def auth_fingerprint():
             
             response_time = time.time() - start_time
             
-            # Log authentication attempt
+            cursor.execute('SELECT id FROM users WHERE username = %s', (username,))
+            user_record = cursor.fetchone()
+            user_id = user_record[0] if user_record else None
+            
             cursor.execute('''INSERT INTO auth_attempts 
                            (username, ip_address, attempt_type, success, confidence_score, 
                             response_time, failure_reason) 
@@ -849,12 +926,10 @@ def auth_fingerprint():
                          response_time, None if match_result['match'] else 'Low confidence'))
             
             if match_result['match']:
-                # Update user login statistics
                 cursor.execute('''UPDATE users 
                                SET last_login = CURRENT_TIMESTAMP, login_count = login_count + 1 
                                WHERE username = %s''', (username,))
                 
-                # Create session
                 session_id = generate_session_token(username)
                 session_expires = datetime.now() + timedelta(hours=24)
                 
@@ -865,23 +940,59 @@ def auth_fingerprint():
                 
                 conn.commit()
                 
+                metadata = {
+                    'score': match_result['score'],
+                    'response_time': response_time,
+                    'quality': submitted_quality,
+                    'device_fingerprint': device_fingerprint,
+                    'ip_address': request.remote_addr,
+                    'location': location,
+                    'session_id': session_id
+                }
+                
+                blockchain_result = log_biometric_event(
+                    user_internal_id=str(user_id),
+                    event_type='AUTH_SUCCESS',
+                    meta_obj=metadata
+                )
+                
                 log_security_event('FINGERPRINT_AUTH_SUCCESS', username, {
                     'score': match_result['score'],
                     'response_time': response_time,
                     'quality': submitted_quality,
-                    'session_id': session_id
+                    'session_id': session_id,
+                    'blockchain_tx': blockchain_result.get('tx_hash') if blockchain_result else None
                 }, 'info')
+                
+                if blockchain_result:
+                    store_metadata(str(user_id), blockchain_result.get('log_index'), metadata)
                 
                 return jsonify({
                     'success': True,
                     'score': match_result['score'],
                     'quality': submitted_quality,
                     'response_time': response_time,
-                    'session_token': session_id
+                    'session_token': session_id,
+                    'blockchain': blockchain_result
                 })
             else:
                 logger.warning(f"401 Debug: Fingerprint not recognized for username={username}, score={match_result['score']}, required={min_quality}")
-                # Add to failed attempts
+                
+                metadata = {
+                    'score': match_result['score'],
+                    'required': min_quality,
+                    'response_time': response_time,
+                    'device_fingerprint': device_fingerprint,
+                    'ip_address': request.remote_addr,
+                    'location': location
+                }
+                
+                blockchain_result = log_biometric_event(
+                    user_internal_id=str(user_id),
+                    event_type='AUTH_FAIL',
+                    meta_obj=metadata
+                )
+                
                 key = f"{username}:fingerprint_auth"
                 if key not in failed_attempts:
                     failed_attempts[key] = []
@@ -892,14 +1003,19 @@ def auth_fingerprint():
                 log_security_event('FINGERPRINT_AUTH_FAILED', username, {
                     'score': match_result['score'],
                     'required': min_quality,
-                    'response_time': response_time
+                    'response_time': response_time,
+                    'blockchain_tx': blockchain_result.get('tx_hash') if blockchain_result else None
                 }, 'warning')
+                
+                if blockchain_result:
+                    store_metadata(str(user_id), blockchain_result.get('log_index'), metadata)
                 
                 return jsonify({
                     'success': False,
                     'error': 'Fingerprint not recognized',
                     'score': match_result['score'],
-                    'required': min_quality
+                    'required': min_quality,
+                    'blockchain': blockchain_result
                 }), 401
                 
         finally:
