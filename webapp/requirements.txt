@@ -70,6 +70,11 @@ idna==3.10
 certifi==2025.7.9
 PySocks==1.7.1
 
+# Blockchain
+web3==6.11.3
+eth-keys==0.4.0
+eth-typing==3.6.0
+
 # Misc Utilities
 blinker==1.9.0
 Deprecated==1.2.18
