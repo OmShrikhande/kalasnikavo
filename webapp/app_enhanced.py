@@ -1595,6 +1595,99 @@ def user_settings():
         cursor.close()
         conn.close()
 
+@app.route('/api/logs', methods=['GET'])
+def get_logs():
+    """Fetch all blockchain logs"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 50, type=int)
+        
+        if per_page > 100:
+            per_page = 100
+        
+        logs = get_all_logs()
+        
+        total = len(logs)
+        start = (page - 1) * per_page
+        end = start + per_page
+        
+        paginated_logs = logs[start:end]
+        
+        return jsonify({
+            'success': True,
+            'logs': paginated_logs,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'pages': (total + per_page - 1) // per_page
+        })
+    except Exception as e:
+        logger.error(f"Error fetching logs: {e}")
+        return jsonify({'error': 'Failed to fetch logs'}), 500
+
+
+@app.route('/api/logs/<int:log_index>/verify', methods=['GET'])
+def verify_log(log_index):
+    """Verify a log entry integrity by comparing on-chain metaHash with stored metadata"""
+    try:
+        log_entry = get_log(log_index)
+        
+        if not log_entry:
+            return jsonify({'error': 'Log entry not found'}), 404
+        
+        on_chain_meta_hash = log_entry['metaHash']
+        
+        user_id_hash = log_entry['userIdHash']
+        
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, username FROM users LIMIT 1'
+            )
+            user = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if not user:
+                return jsonify({
+                    'success': False,
+                    'verified': False,
+                    'error': 'User not found for verification'
+                }), 404
+        except Exception as e:
+            logger.error(f"Database error: {e}")
+            return jsonify({
+                'success': False,
+                'verified': False,
+                'error': 'Database error'
+            }), 500
+        
+        user_id = str(user[0])
+        stored_metadata = retrieve_metadata(user_id, log_index)
+        
+        if not stored_metadata:
+            return jsonify({
+                'success': True,
+                'verified': False,
+                'reason': 'Metadata not available for verification (off-chain storage)',
+                'log_entry': log_entry
+            })
+        
+        is_valid = verify_metadata(stored_metadata, on_chain_meta_hash)
+        
+        return jsonify({
+            'success': True,
+            'verified': is_valid,
+            'log_index': log_index,
+            'log_entry': log_entry,
+            'stored_metadata': stored_metadata,
+            'message': 'Metadata integrity verified' if is_valid else 'Metadata integrity check failed'
+        })
+    except Exception as e:
+        logger.error(f"Error verifying log: {e}")
+        return jsonify({'error': 'Failed to verify log', 'details': str(e)}), 500
+
 # Background tasks
 def cleanup_expired_sessions():
     """Clean up expired sessions"""
